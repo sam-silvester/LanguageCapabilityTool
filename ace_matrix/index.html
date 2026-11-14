@@ -1,0 +1,1267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ACE capability matrix</title>
+<style>
+:root{
+  color-scheme:light dark;
+  --color-fg:#1b2130;--color-fg-muted:#5d6676;--color-bg:#ffffff;--color-panel:#f5f6f8;--color-border-line:#d7dbe2;
+  --font-anthropic-sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --font-anthropic-serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  --cds-surface-popover:#ffffff;--cds-border:#d7dbe2;--cds-shadow-popover:0 6px 20px rgba(16,24,40,.16);
+  --cds-text-secondary:#5d6676;--cds-chart-muted:#98a2b3;
+  --series-0:#3b6fb6;--series-1:#e08a3c;--series-2:#3f8f6b;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --color-fg:#e8eaee;--color-fg-muted:#a1a9b8;--color-bg:#14171c;--color-panel:#1d2128;--color-border-line:#343a45;
+    --cds-surface-popover:#232832;--cds-border:#3a414d;--cds-shadow-popover:0 6px 20px rgba(0,0,0,.5);
+    --cds-text-secondary:#a1a9b8;--cds-chart-muted:#6b7483;
+    --series-0:#6ea0e6;--series-1:#f0a35e;--series-2:#62b890;
+  }
+}
+html{background-color:var(--color-bg);color:var(--color-fg)}
+body{margin:0;font-family:var(--font-anthropic-sans)}
+.local-wrap{max-width:1180px;margin:0 auto;padding:24px 20px 48px}
+.local-status{margin:0 0 20px;padding:12px 14px;border:1px solid var(--color-border-line);border-left:4px solid #e5484d;border-radius:8px;background-color:var(--color-panel);font-size:14px;line-height:1.45}
+.local-status p{margin:0 0 6px}
+.local-status ul{margin:0;padding-left:18px}
+.local-status code,.local-foot code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.92em}
+.local-foot{margin-top:36px;padding-top:12px;border-top:1px solid var(--color-border-line);color:var(--color-fg-muted);font-size:12px;line-height:1.5}
+.dash-select{font:inherit;font-size:13px;color:var(--color-fg);background-color:var(--color-panel);border:1px solid var(--color-border-line);border-radius:8px;padding:5px 8px}
+.acm-seg-b:focus-visible,.acm-btn:focus-visible,.dash-select:focus-visible,.acm-rowlab:focus-visible,.acm-collab:focus-visible{outline:2px solid var(--series-0);outline-offset:2px}
+</style>
+<script src="vendor/d3.min.js"></script>
+<script>
+/* Local stand-in for the dashboard runtime the hosted app runs on.
+   It loads the files in the data folder and hands them to the page code below. */
+window.dash = (function () {
+  const SOURCES = {
+    capabilities: {file: 'data/capabilities.json', format: 'json'},
+    languages: {file: 'data/languages.json', format: 'json'},
+    image_counts: {file: 'data/image_counts.csv', format: 'csv'},
+    priorities_2027: {file: 'data/priorities_2027.json', format: 'json'},
+    country_languages: {file: 'data/country_languages.json', format: 'json'},
+    country_counts_2027: {file: 'data/country_counts_2027.csv', format: 'csv'},
+  };
+  const DEFAULTS = {ctype: '', lang: '', script: '', tier: '', view: 'both', scope: 'noft', page: 'now', band: '', plang: '', pmeasure: 'images'};
+  const loaders = {}, calcs = {}, draws = {}, listeners = [], store = {};
+  let params = Object.assign({}, DEFAULTS), started = false, pending = false, memo = new Map();
+
+  const fromCalc = (id) => {
+    if (memo.has(id)) return memo.get(id);
+    const inputs = calcs[id].inputs.map(data);
+    const waiting = inputs.find((d) => d.status !== 'ok');
+    let out;
+    if (waiting) {
+      out = {status: waiting.status, data: null, message: waiting.message || ''};
+    } else {
+      try {
+        out = {status: 'ok', data: calcs[id].fn.apply(null, inputs.map((d) => d.data)), message: ''};
+      } catch (err) {
+        out = {status: 'error', data: null, message: String((err && err.message) || err)};
+        console.error('Calculation ' + id + ' failed', err);
+      }
+    }
+    memo.set(id, out);
+    return out;
+  };
+  function data(id) {
+    if (calcs[id]) return fromCalc(id);
+    if (SOURCES[id]) return store[id] || {status: 'loading', data: [], message: ''};
+    return {status: 'missing', data: [], message: 'There is no source named ' + id};
+  }
+
+  const showStatus = () => {
+    const box = document.getElementById('local-status');
+    if (!box) return;
+    const failed = Object.keys(store).filter((id) => store[id].status === 'error');
+    box.hidden = failed.length === 0;
+    if (!failed.length) return;
+    const list = box.querySelector('ul');
+    list.replaceChildren(...failed.map((id) => {
+      const li = document.createElement('li');
+      li.textContent = store[id].message;
+      return li;
+    }));
+    box.querySelectorAll('.local-file-hint').forEach((n) => { n.hidden = location.protocol !== 'file:'; });
+  };
+
+  function run() {
+    pending = false;
+    memo = new Map();
+    listeners.forEach((fn) => { try { fn(); } catch (err) { console.error(err); } });
+    const root = document.getElementById('dash-root');
+    root.querySelectorAll('[data-draw]').forEach((el) => {
+      if (el.closest('[hidden]')) return;
+      if (el.parentElement && el.parentElement.closest('[data-draw]')) return;
+      const fn = draws[el.getAttribute('data-draw')];
+      if (!fn) return;
+      try { fn(el); } catch (err) { console.error('Drawing ' + el.getAttribute('data-draw') + ' failed', err); }
+    });
+    showStatus();
+  }
+  const schedule = () => {
+    if (!started || pending) return;
+    pending = true;
+    requestAnimationFrame(run);
+  };
+
+  async function load(id) {
+    const src = SOURCES[id];
+    try {
+      const res = await fetch(src.file, {cache: 'no-store'});
+      if (!res.ok) throw new Error('the server answered ' + res.status);
+      const answer = src.format === 'json' ? await res.json() : await res.text();
+      let rows = loaders[id] ? await loaders[id].fn({answer: answer, items: [answer], args: {}}) : answer;
+      if (rows && !Array.isArray(rows) && Array.isArray(rows.rows)) rows = rows.rows;
+      if (!Array.isArray(rows)) throw new Error('no rows were found in it');
+      store[id] = {status: 'ok', data: rows, message: ''};
+    } catch (err) {
+      store[id] = {status: 'error', data: [], message: src.file + ' did not load: ' + String((err && err.message) || err)};
+    }
+    schedule();
+  }
+
+  return {
+    data: data,
+    calc: (id, def) => { calcs[id] = def; },
+    loader: (id, def) => { loaders[id] = def; },
+    draw: (name, fn) => { if (typeof fn === 'function') draws[name] = fn; else schedule(); },
+    onData: (fn) => { listeners.push(fn); },
+    params: () => Object.assign({}, params),
+    setParams: (values) => { params = Object.assign({}, params, values); schedule(); },
+    resetParams: () => { params = Object.assign({}, DEFAULTS); schedule(); },
+    setLink: (name) => { try { history.replaceState(null, '', '#' + name); } catch (err) { /* a link is optional */ } },
+    refresh: (id) => { if (SOURCES[id]) load(id); },
+    colors: ['var(--series-0)', 'var(--series-1)', 'var(--series-2)'],
+    start: () => {
+      started = true;
+      Object.keys(SOURCES).forEach(load);
+      let timer = 0;
+      window.addEventListener('resize', () => { clearTimeout(timer); timer = setTimeout(schedule, 120); });
+      // a link such as #acm-2027 picks the view; keep the title and the view switch on screen
+      if (location.hash) window.addEventListener('load', () => setTimeout(() => window.scrollTo(0, 0), 60));
+      run();
+    },
+  };
+})();
+</script>
+</head>
+<body>
+<div class="local-wrap">
+<div class="local-status" id="local-status" role="alert" hidden>
+  <p>Some data did not load, so parts of this page are empty.</p>
+  <ul></ul>
+  <p class="local-file-hint" hidden>This page was opened as a file. Start it with <code>python3 -m http.server 8765</code> from the ace_matrix folder and open <code>http://localhost:8765</code> instead.</p>
+</div>
+<div id="dash-root" lang="en">
+<style>
+.acm{--acm-s0:#D5DAE1;--acm-s1:#7A8699;--acm-s2:#A7B0BE;--acm-s3:#D5DAE1;--acm-s4:#E5484D;--acm-s5:#F0883E;--acm-s6:#F2C94C;--acm-s7:#4F9CE8;--acm-s8:#8ED8AE;--acm-s9:#2FA66A;--acm-s10:#146C43;container-type:inline-size;display:flex;flex-direction:column;gap:var(--cds-gap-xl,28px);font-family:var(--font-anthropic-sans,system-ui,sans-serif);color:var(--color-fg);font-size:var(--cds-font-size-body,14px);line-height:1.45}
+.acm [hidden]{display:none !important}
+.acm-sec{display:flex;flex-direction:column;gap:var(--cds-gap-md,12px);min-width:0}
+.acm-title{font-family:var(--font-anthropic-serif,Georgia,serif);font-weight:400;font-size:var(--cds-font-size-title,28px);line-height:1.15;margin:0}
+.acm-lede{margin:0;max-width:72ch;font-size:var(--cds-font-size-heading,17px);line-height:1.4}
+.acm-n{font-weight:600;font-variant-numeric:tabular-nums}
+.acm-h2{font-size:var(--cds-font-size-heading,18px);font-weight:var(--cds-font-weight-medium,500);margin:0}
+.acm-h3{font-size:var(--cds-font-size-body,14px);font-weight:600;margin:0}
+.acm-cap{color:var(--color-fg-muted);font-size:var(--cds-font-size-caption,12px);margin:0;max-width:84ch}
+.acm-controls{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center}
+.acm-seg{display:inline-flex;border:1px solid var(--color-border-line);border-radius:var(--cds-radius,8px);overflow:hidden}
+.acm-seg-b{appearance:none;border:0;background-color:transparent;color:var(--color-fg);font:inherit;font-size:var(--cds-font-size-caption,12px);padding:6px 12px;cursor:pointer}
+.acm-seg-b[aria-pressed="true"]{background-color:var(--color-fg);color:var(--color-bg)}
+.acm-btn{appearance:none;border:1px solid var(--color-border-line);border-radius:var(--cds-radius,8px);background-color:var(--color-panel);color:var(--color-fg);font:inherit;font-size:var(--cds-font-size-caption,12px);padding:4px 10px;cursor:pointer}
+.acm-bars{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:8px 12px;align-items:center}
+.acm-barlab{font-size:var(--cds-font-size-caption,12px);color:var(--color-fg-muted)}
+.acm-chart{position:relative;min-width:0}
+.acm-bar{min-height:26px}
+.acm-matrix{min-height:320px}
+.acm-legend{display:flex;flex-wrap:wrap;gap:6px 14px;list-style:none;margin:0;padding:0;font-size:var(--cds-font-size-caption,12px);color:var(--color-fg-muted)}
+.acm-key{display:inline-flex;align-items:center;gap:6px}
+.acm-sw{display:inline-block;width:12px;height:12px;border-radius:3px;flex:none}
+.acm-sw1{background-color:var(--acm-s1)}.acm-sw2{background-color:var(--acm-s2)}.acm-sw3{background-color:var(--acm-s3)}.acm-sw4{background-color:var(--acm-s4)}.acm-sw5{background-color:var(--acm-s5)}.acm-sw6{background-color:var(--acm-s6)}.acm-sw7{background-color:var(--acm-s7)}.acm-sw8{background-color:var(--acm-s8)}.acm-sw9{background-color:var(--acm-s9)}.acm-sw10{background-color:var(--acm-s10)}
+.acm-sw-none{width:4px;height:4px;border-radius:50%;margin:0 4px;background-color:var(--color-fg-muted)}
+.acm-split{display:inline-block;width:14px;height:12px;border-radius:3px;flex:none;background:linear-gradient(90deg,var(--acm-s9) 0 46%,transparent 46% 54%,var(--acm-s7) 54% 100%)}
+.acm-explore{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--cds-gap-lg,20px);align-items:start}
+.acm-panel{display:flex;flex-direction:column;gap:var(--cds-gap-sm,8px);min-width:0}
+.acm-detail-wrap{display:flex;flex-direction:column;gap:var(--cds-gap-sm,8px)}
+.acm-detail-bar{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center}
+.acm-seltitle{font-weight:600;margin-right:auto}
+.acm-detail{display:flex;flex-direction:column;gap:10px}
+@container (min-width:980px){.acm-explore{grid-template-columns:minmax(0,3fr) minmax(300px,2fr)}.acm-panel{position:sticky;top:12px;max-height:calc(100vh - 24px);overflow:auto}.acm-back{display:none}}
+.acm-card{background-color:var(--color-panel);border:1px solid var(--color-border-line);border-radius:var(--cds-radius,8px);padding:var(--cds-pad-md,12px);display:flex;flex-direction:column;gap:6px}
+.acm-card-top{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:baseline}
+.acm-id{font-variant-numeric:tabular-nums;color:var(--color-fg-muted);font-size:var(--cds-font-size-caption,12px)}
+.acm-lang{font-weight:600}
+.acm-chip{font-size:var(--cds-font-size-caption,12px);border:1px solid var(--color-border-line);border-radius:999px;padding:0 8px;color:var(--color-fg-muted)}
+.acm-rt{margin:0;font-weight:500}
+.acm-pair{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
+.acm-side{display:flex;flex-direction:column;gap:4px;border-top:1px solid var(--color-border-line);padding-top:6px;min-width:0}
+.acm-side-h{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.acm-k{font-weight:600}
+.acm-k2{color:var(--color-fg-muted);font-size:var(--cds-font-size-caption,12px)}
+.acm-pill{font-size:var(--cds-font-size-caption,12px);border-radius:999px;padding:0 8px;font-weight:600;color:#1D2939}
+.acm-text,.acm-line,.acm-foot,.acm-p{margin:0}
+.acm-line{display:flex;flex-wrap:wrap;gap:2px 12px}
+.acm-foot{color:var(--color-fg-muted);font-size:var(--cds-font-size-caption,12px);display:flex;flex-wrap:wrap;gap:2px 12px}
+.acm-svg{display:block;overflow:visible}
+.acm-rowlab{font-size:12px;fill:var(--color-fg);cursor:pointer}
+.acm-collab{font-size:11.5px;fill:var(--cds-text-secondary,var(--color-fg-muted));cursor:pointer}
+.acm-narrow .acm-rowlab,.acm-narrow .acm-collab{font-size:10.5px}
+.acm-sel{font-weight:700;fill:var(--color-fg)}
+.acm-dot{fill:var(--color-fg-muted);opacity:.45}
+.acm-hit{fill:transparent;cursor:pointer}
+.acm-band{fill:none;stroke:var(--color-fg);stroke-width:1.5;pointer-events:none}
+.acm-endlab{font-size:11.5px;fill:var(--cds-text-secondary,var(--color-fg-muted));font-variant-numeric:tabular-nums}
+.acm-seg-t{font-size:11px;fill:#1D2939;pointer-events:none;font-variant-numeric:tabular-nums}
+.acm-on1,.acm-on4,.acm-on9,.acm-on10{fill:#fff;color:#fff}
+.acm-tip{position:absolute;z-index:5;pointer-events:none;display:flex;flex-direction:column;gap:3px;max-width:260px;padding:8px 10px;font-size:var(--cds-font-size-caption,12px);color:var(--color-fg);background-color:var(--cds-surface-popover,var(--color-panel));border:1px solid var(--cds-border,var(--color-border-line));border-radius:var(--cds-radius,8px);box-shadow:var(--cds-shadow-popover,0 4px 16px rgba(0,0,0,.18))}
+.acm-tip-h{font-weight:600}
+.acm-tip-r{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.acm-tip-f{color:var(--cds-text-secondary,var(--color-fg-muted))}
+.acm-view{display:flex;flex-direction:column;gap:var(--cds-gap-xl,28px);min-width:0}
+.acm-b2{opacity:.6}
+.acm-b3{opacity:.3}
+.acm-tick{display:inline-block;width:2px;height:12px;margin:0 5px;flex:none;background-color:var(--color-fg)}
+.acm-mark{stroke:var(--color-fg);stroke-width:1.5;pointer-events:none}
+.acm-osw{background-color:var(--cds-chart-muted,var(--color-fg-muted));opacity:.5}
+.acm-twrap{overflow-x:auto;min-width:0}
+.acm-table{border-collapse:collapse;width:100%;font-size:var(--cds-font-size-caption,12px)}
+.acm-table th,.acm-table td{text-align:left;vertical-align:top;padding:6px 12px 6px 0;border-bottom:1px solid var(--color-border-line)}
+.acm-table th{color:var(--color-fg-muted);font-weight:500;white-space:nowrap}
+.acm-table .acm-num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.acm-table .acm-nw{white-space:nowrap}
+.acm-table .acm-note{min-width:220px;color:var(--color-fg-muted)}
+.acm-notes{border-top:1px solid var(--color-border-line);padding-top:var(--cds-pad-sm,8px)}
+.acm-sum{cursor:pointer;font-weight:500}
+.acm-notes-b{display:flex;flex-direction:column;gap:8px;margin-top:8px;max-width:84ch;color:var(--color-fg-muted)}
+</style>
+<div class="acm">
+  <header class="acm-sec">
+    <h1 class="acm-title" id="acm-title">ACE capability matrix</h1>
+    <div class="acm-controls" id="acm-views">
+      <div class="acm-seg" role="group" aria-label="View">
+        <button type="button" class="acm-seg-b" data-page="now" aria-pressed="true">Capability today</button>
+        <button type="button" class="acm-seg-b" data-page="y2027" aria-pressed="false">2027 priorities</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="acm-view" id="acm-now">
+  <div class="acm-sec" id="acm-now-head">
+    <p class="acm-lede" id="acm-lede">Rows in view: <b class="acm-n" data-draw="sum" data-source="summary" data-field="rows" data-row="0">—</b>. Full text is in production for <b class="acm-n" data-draw="sum" data-source="summary" data-field="ft_production" data-row="0">—</b> of them, and an index path is in production or maintenance for <b class="acm-n" data-draw="sum" data-source="summary" data-field="ix_production" data-row="0">—</b>. A gap in full text or index is recorded for <b class="acm-n" data-draw="sum" data-source="summary" data-field="gap_rows" data-row="0">—</b>.</p>
+    <p class="acm-cap">Seeded on 13 Nov 2026 from ACE Confluence and Jira pages. Statuses are a first-pass mapping that the team still needs to confirm.</p>
+    <div class="acm-controls" id="acm-filters">
+      <select class="dash-select" data-draw="tier" aria-label="Tier" data-source="capabilities"></select>
+      <select class="dash-select" data-draw="script" aria-label="Script" data-source="languages"></select>
+    </div>
+  </div>
+
+  <section class="acm-sec" id="acm-status">
+    <h2 class="acm-h2">Where capability stands</h2>
+    <div class="acm-bars">
+      <span class="acm-barlab">Full text</span>
+      <div class="acm-chart acm-bar" data-draw="statusbar" data-kind="full_text_rows" data-source="status_counts" role="img" aria-label="Rows by full-text status">—</div>
+      <span class="acm-barlab">Index</span>
+      <div class="acm-chart acm-bar" data-draw="statusbar" data-kind="index_rows" data-source="status_counts" role="img" aria-label="Rows by index status">—</div>
+    </div>
+    <ul class="acm-legend" id="acm-legend">
+      <li class="acm-key"><i class="acm-sw acm-sw10"></i>Mature / maintenance</li>
+      <li class="acm-key"><i class="acm-sw acm-sw9"></i>Production (at scale)</li>
+      <li class="acm-key"><i class="acm-sw acm-sw8"></i>Production (partial)</li>
+      <li class="acm-key"><i class="acm-sw acm-sw7"></i>Pilot / validation</li>
+      <li class="acm-key"><i class="acm-sw acm-sw6"></i>In development</li>
+      <li class="acm-key"><i class="acm-sw acm-sw5"></i>Planning / research</li>
+      <li class="acm-key"><i class="acm-sw acm-sw4"></i>Gap (no capability)</li>
+      <li class="acm-key"><i class="acm-sw acm-sw3"></i>Not assessed</li>
+      <li class="acm-key"><i class="acm-sw acm-sw2"></i>Cancelled / abandoned</li>
+      <li class="acm-key"><i class="acm-sw acm-sw1"></i>Out of scope</li>
+      <li class="acm-key"><i class="acm-sw acm-sw-none"></i>No row yet</li>
+    </ul>
+  </section>
+
+  <section class="acm-sec" id="acm-matrix">
+    <h2 class="acm-h2">Language by content type</h2>
+    <p class="acm-cap">Each cell shows the most advanced status among the rows for that language and content type. Select a cell, a language or a content type to see the rows behind it.</p>
+    <div class="acm-controls">
+      <div class="acm-seg" role="group" aria-label="Status shown in each cell">
+        <button type="button" class="acm-seg-b" data-view="both" aria-pressed="true">Both</button>
+        <button type="button" class="acm-seg-b" data-view="ft" aria-pressed="false">Full text</button>
+        <button type="button" class="acm-seg-b" data-view="ix" aria-pressed="false">Index</button>
+      </div>
+      <span class="acm-key acm-cap"><i class="acm-split"></i>In Both, the left half is full text and the right half is index.</span>
+    </div>
+    <div class="acm-explore">
+      <div class="acm-chart acm-matrix" data-draw="matrix" data-source="coverage languages capabilities" role="group" aria-label="Capability status by language and content type">—</div>
+      <aside class="acm-panel" id="acm-detail">
+        <h3 class="acm-h3">Rows behind the selection</h3>
+        <p class="acm-cap acm-hint">Nothing selected yet. Select a cell, a language name or a content type heading.</p>
+        <div class="acm-detail-wrap" hidden>
+          <div class="acm-detail-bar">
+            <span class="acm-seltitle" data-draw="seltitle">—</span>
+            <button type="button" class="acm-btn acm-clear">Clear selection</button>
+            <button type="button" class="acm-btn acm-back">Back to matrix</button>
+          </div>
+          <div class="acm-detail" data-draw="detail" data-source="capabilities languages language_counts"></div>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <section class="acm-sec" id="acm-backlog">
+    <h2 class="acm-h2">Unindexed images by language</h2>
+    <p class="acm-cap">Images in mid-tier and top-tier groups with no index, counted in Databricks on <span data-draw="feed" data-source="feed_info" data-field="run_date" data-row="0">—</span>. Each bar counts the groups that carry only that language. Another <span class="acm-n" data-draw="feed" data-source="feed_info" data-field="other_groups" data-row="0">—</span> such images sit in groups with several languages or none and are not shown. Temple and PIPA images are left out. Select a bar to see that language's rows.</p>
+    <div class="acm-controls" id="acm-scope">
+      <div class="acm-seg" role="group" aria-label="Which unindexed images to count">
+        <button type="button" class="acm-seg-b" data-scope="noft" aria-pressed="true">Not yet in full text</button>
+        <button type="button" class="acm-seg-b" data-scope="all" aria-pressed="false">All unindexed</button>
+      </div>
+      <span class="acm-cap">Not yet in full text leaves out images already processed for full text.</span>
+    </div>
+    <div class="acm-legend">
+      <span class="acm-key"><i class="acm-sw acm-c0"></i>Mid-tier</span>
+      <span class="acm-key"><i class="acm-sw acm-c1"></i>Top-tier</span>
+    </div>
+    <div class="acm-chart" data-draw="backlog" data-source="backlog" role="img" aria-label="Unindexed mid-tier and top-tier images by language">—</div>
+  </section>
+
+  <details class="acm-notes" id="acm-notes">
+    <summary class="acm-sum">How to read this, and what to check first</summary>
+    <div class="acm-notes-b">
+      <p class="acm-p">Each row is one capability cell from the Matrix sheet of ACE_Capability_Matrix.xlsx: a language, a content type and a tier, with one status for full text and one for index.</p>
+      <p class="acm-p">The status scale runs from Out of scope and Not assessed, through Gap, Planning, In development and Pilot, to Production (partial), Production (at scale) and Mature. In the summary, "in production" means Production (partial) or higher.</p>
+      <p class="acm-p">A language with no coloured cells has no row in the workbook yet.</p>
+      <p class="acm-p">Check first: tier is still TBD for census, newspapers, books, cards and marriage packets. Rows for the Q4 2026 runs reflect October plans, not the 7 November gate or the Puebla Run 1 audit. Estimated images on the rows come from pages of different dates and don't reconcile.</p>
+      <p class="acm-p">The unindexed-image counts by language come from the ace_matrix_feed.sql query run in Databricks, not from the workbook. A group with any top-tier record type counts as top-tier. Mid-tier means mid-tier record types and no top-tier ones. Estimated images on the rows are older planning figures that the query does not change.</p>
+    </div>
+  </details>
+  </div>
+
+  <div class="acm-view" id="acm-2027" hidden>
+  <div class="acm-sec" id="acm-2027-head">
+    <p class="acm-lede" id="acm-2027-lede">The 2027 list holds <b class="acm-n" data-draw="plansum" data-source="plan_summary" data-field="record_sets" data-row="0">—</b> record sets across <b class="acm-n" data-draw="plansum" data-source="plan_summary" data-field="countries" data-row="0">—</b> countries and <b class="acm-n" data-draw="plansum" data-source="plan_summary" data-field="languages" data-row="0">—</b> languages. For <b class="acm-n" data-draw="plansum" data-source="plan_summary" data-field="counted_sets" data-row="0">—</b> of them, Databricks counts <b class="acm-n" data-draw="plansum" data-source="plan_summary" data-field="unindexed_images" data-row="0">—</b> unindexed images in <b class="acm-n" data-draw="plansum" data-source="plan_summary" data-field="unindexed_groups" data-row="0">—</b> natural groups, against <b class="acm-n" data-draw="plansum" data-source="plan_summary" data-field="plan_groups" data-row="0">—</b> groups on the list. <b class="acm-n" data-draw="plansum" data-source="plan_summary" data-field="high_images" data-row="0">—</b> of those images are High priority, <b class="acm-n" data-draw="plansum" data-source="plan_summary" data-field="medium_images" data-row="0">—</b> Medium and <b class="acm-n" data-draw="plansum" data-source="plan_summary" data-field="low_images" data-row="0">—</b> Low.</p>
+    <p class="acm-cap">The list comes from Content_To_Key_Sep_2026.xlsx and the counts from the country query run in Databricks. The workbook lists countries, so each country is counted under one language, listed in the file data/country_languages.json. Poland and Switzerland also hold records in other languages.</p>
+    <div class="acm-controls" id="acm-2027-filters">
+      <select class="dash-select" data-draw="band" aria-label="Priority band" data-source="priorities_2027"></select>
+    </div>
+  </div>
+
+  <section class="acm-sec" id="acm-2027-index">
+    <h2 class="acm-h2">Index workstream: content to key</h2>
+    <p class="acm-cap">Unindexed content that Databricks counts for the record sets on the 2027 list, by language and priority band. Languages with High priority content come first. Select a language to list its record sets.</p>
+    <div class="acm-controls" id="acm-2027-measure">
+      <div class="acm-seg" role="group" aria-label="Count images or natural groups">
+        <button type="button" class="acm-seg-b" data-pmeasure="images" aria-pressed="true">Images</button>
+        <button type="button" class="acm-seg-b" data-pmeasure="groups" aria-pressed="false">Natural groups</button>
+      </div>
+      <span class="acm-cap">Natural groups also shows the count on the list as a tick on each row.</span>
+    </div>
+    <div class="acm-legend">
+      <span class="acm-key"><i class="acm-sw acm-bsw"></i>High</span>
+      <span class="acm-key"><i class="acm-sw acm-bsw acm-b2"></i>Medium</span>
+      <span class="acm-key"><i class="acm-sw acm-bsw acm-b3"></i>Low</span>
+      <span class="acm-key acm-plan-tickkey" hidden><i class="acm-tick"></i>Groups on the list</span>
+    </div>
+    <div class="acm-chart" data-draw="planindex" data-source="plan_languages" role="group" aria-label="Unindexed content for the 2027 list by language and priority band">—</div>
+  </section>
+
+  <section class="acm-sec" id="acm-2027-ftt">
+    <h2 class="acm-h2">Full text transcription (FTT) workstream: images not yet in full text</h2>
+    <p class="acm-cap">The same languages in the same order. Images in mid-tier and top-tier groups with no index and no full text yet, counted in Databricks on <span data-draw="feed" data-source="feed_info" data-field="run_date" data-row="0">—</span>. These count every group that carries only that language, in any country and of any record type, so they reach beyond the 2027 list. Temple and PIPA images are left out.</p>
+    <div class="acm-legend">
+      <span class="acm-key"><i class="acm-sw acm-c0"></i>Mid-tier</span>
+      <span class="acm-key"><i class="acm-sw acm-c1"></i>Top-tier</span>
+    </div>
+    <div class="acm-chart" data-draw="planftt" data-source="plan_languages language_counts" role="group" aria-label="Images not yet in full text for the 2027 languages">—</div>
+  </section>
+
+  <section class="acm-sec" id="acm-2027-rows">
+    <h2 class="acm-h2">Record sets to key</h2>
+    <p class="acm-cap">Every row of the 2027 list, High priority first, then by unindexed images. Counted vs list is the unindexed groups Databricks finds as a percentage of the groups on the list.</p>
+    <div class="acm-detail-bar acm-plan-sel" hidden>
+      <span class="acm-seltitle" data-draw="plansel">—</span>
+      <button type="button" class="acm-btn acm-plan-clear">Show all languages</button>
+    </div>
+    <div class="acm-twrap">
+      <table class="acm-table" data-source="plan_rows" data-row-key="id">
+        <thead><tr>
+          <th data-field="language">Language</th>
+          <th data-field="country">Country</th>
+          <th data-field="record_type">Record type</th>
+          <th data-field="priority_band">Priority band</th>
+          <th class="acm-num" data-field="plan_groups">Groups on list</th>
+          <th class="acm-num" data-field="unindexed_groups">Unindexed groups</th>
+          <th class="acm-num" data-field="counted_pct">Counted vs list</th>
+          <th class="acm-num" data-field="unindexed_images">Unindexed images</th>
+          <th data-field="notes">Notes</th>
+        </tr></thead>
+        <tbody data-draw="planrows"></tbody>
+      </table>
+    </div>
+  </section>
+  </div>
+
+  <template class="acm-tip-plan-tpl"><div class="acm-tip">
+    <div class="acm-tip-h" data-t="language"></div>
+    <div class="acm-tip-f acm-opt"><span data-t="countries"></span></div>
+    <div class="acm-tip-r acm-opt"><i class="acm-sw acm-bsw"></i><span class="acm-k2">High</span><span data-t="high"></span></div>
+    <div class="acm-tip-r acm-opt"><i class="acm-sw acm-bsw acm-b2"></i><span class="acm-k2">Medium</span><span data-t="medium"></span></div>
+    <div class="acm-tip-r acm-opt"><i class="acm-sw acm-bsw acm-b3"></i><span class="acm-k2">Low</span><span data-t="low"></span></div>
+    <div class="acm-tip-r acm-opt"><i class="acm-sw acm-osw"></i><span class="acm-k2">Other band</span><span data-t="other"></span></div>
+    <div class="acm-tip-f"><span class="acm-k2">Unindexed images</span> <span data-t="images"></span></div>
+    <div class="acm-tip-f"><span class="acm-k2">Unindexed groups</span> <span data-t="groups"></span></div>
+    <div class="acm-tip-f"><span class="acm-k2">Groups on the list</span> <span data-t="plan"></span></div>
+  </div></template>
+  <template class="acm-plan-none-tpl"><p class="acm-cap">No record sets match the priority band and language chosen.</p></template>
+  <template class="acm-tip-cell-tpl"><div class="acm-tip">
+    <div class="acm-tip-h"><span data-t="language"></span> · <span data-t="content_type"></span></div>
+    <div class="acm-tip-r"><i class="acm-sw" data-sw="ft_rank"></i><span class="acm-k2">Full text</span><span data-t="ft_status"></span></div>
+    <div class="acm-tip-r"><i class="acm-sw" data-sw="ix_rank"></i><span class="acm-k2">Index</span><span data-t="ix_status"></span></div>
+    <div class="acm-tip-f"><span class="acm-k2">Rows</span> <span data-t="rows"></span><span class="acm-opt"> · <span class="acm-k2">Est. images</span> <span data-t="images"></span></span></div>
+  </div></template>
+  <template class="acm-tip-bar-tpl"><div class="acm-tip">
+    <div class="acm-tip-r"><i class="acm-sw" data-sw="rank"></i><span class="acm-tip-h" data-t="status"></span></div>
+    <div class="acm-tip-f"><span class="acm-k2">Rows</span> <span data-t="count"></span></div>
+  </div></template>
+  <template class="acm-tip-vol-tpl"><div class="acm-tip">
+    <div class="acm-tip-h" data-t="language"></div>
+    <div class="acm-tip-r"><i class="acm-sw acm-c0"></i><span class="acm-k2">Mid-tier</span><span data-t="mid"></span></div>
+    <div class="acm-tip-r"><i class="acm-sw acm-c1"></i><span class="acm-k2">Top-tier</span><span data-t="top"></span></div>
+  </div></template>
+  <template class="acm-none-tpl"><p class="acm-cap">No rows match this selection and the filters above.</p></template>
+  <template class="acm-lang-tpl"><article class="acm-card">
+    <div class="acm-card-top"><span class="acm-lang" data-f="language"></span><span class="acm-chip" data-f="script"></span><span class="acm-chip" data-f="oreo_status"></span></div>
+    <p class="acm-line">
+      <span class="acm-opt"><span class="acm-k2">Quality gate</span> <span data-f="ft_gate"></span></span>
+      <span class="acm-opt"><span class="acm-k2">Word accuracy</span> <span data-f="word_accuracy"></span></span>
+      <span class="acm-opt"><span class="acm-k2">Model</span> <span data-f="visual_model"></span></span>
+      <span class="acm-opt"><span class="acm-k2">Timpy model</span> <span data-f="timpy_model"></span></span>
+    </p>
+    <p class="acm-line">
+      <span class="acm-opt"><span class="acm-k2">Mid-tier unindexed</span> <span data-f="mid_tier_unindexed" data-from="language_counts" data-num="1"></span></span>
+      <span class="acm-opt"><span class="acm-k2">Top-tier unindexed</span> <span data-f="top_tier_unindexed" data-from="language_counts" data-num="1"></span></span>
+      <span class="acm-opt"><span class="acm-k2">Mid-tier, not yet in full text</span> <span data-f="mid_tier_no_full_text" data-from="language_counts" data-num="1"></span></span>
+      <span class="acm-opt"><span class="acm-k2">Top-tier, not yet in full text</span> <span data-f="top_tier_no_full_text" data-from="language_counts" data-num="1"></span></span>
+      <span class="acm-opt"><span class="acm-k2">Unindexed under PIPA</span> <span data-f="pipa_unindexed" data-from="language_counts" data-num="1"></span></span>
+      <span class="acm-opt"><span class="acm-k2">Images in single-language groups</span> <span data-f="images_single_language" data-from="language_counts" data-num="1"></span></span>
+    </p>
+    <p class="acm-text acm-opt"><span data-f="evidence_2026"></span></p>
+    <p class="acm-text acm-opt"><span data-f="notes"></span></p>
+  </article></template>
+  <template class="acm-card-tpl"><article class="acm-card">
+    <div class="acm-card-top"><span class="acm-id" data-f="id"></span><span class="acm-lang" data-f="language"></span><span data-f="content_type"></span><span class="acm-chip" data-f="tier"></span></div>
+    <p class="acm-rt" data-f="record_type"></p>
+    <div class="acm-pair">
+      <div class="acm-side">
+        <div class="acm-side-h"><span class="acm-k">Full text</span><span class="acm-pill" data-f="ft_status" data-rankf="ft_rank"></span></div>
+        <p class="acm-line">
+          <span class="acm-opt"><span class="acm-k2">Engine</span> <span data-f="tr_engine"></span></span>
+          <span class="acm-opt"><span class="acm-k2">Gate</span> <span data-f="ft_gate"></span></span>
+        </p>
+        <p class="acm-text acm-opt"><span data-f="ft_evidence"></span></p>
+      </div>
+      <div class="acm-side">
+        <div class="acm-side-h"><span class="acm-k">Index</span><span class="acm-pill" data-f="ix_status" data-rankf="ix_rank"></span></div>
+        <p class="acm-line">
+          <span class="acm-opt"><span class="acm-k2">Approach</span> <span data-f="ix_approach"></span></span>
+          <span class="acm-opt"><span class="acm-k2">Legacy capability</span> <span data-f="cai_capability"></span></span>
+        </p>
+        <p class="acm-text acm-opt"><span data-f="ix_evidence"></span></p>
+        <p class="acm-text acm-opt"><span class="acm-k2">Gaps</span> <span data-f="ix_gaps"></span></p>
+      </div>
+    </div>
+    <p class="acm-line">
+      <span class="acm-opt"><span class="acm-k2">Est. images</span> <span data-f="est_images" data-num="1"></span></span>
+      <span class="acm-opt"><span class="acm-k2">Priority</span> <span data-f="priority"></span></span>
+      <span class="acm-opt"><span class="acm-k2">Target</span> <span data-f="target"></span></span>
+    </p>
+    <p class="acm-text acm-opt"><span class="acm-k2">Next step</span> <span data-f="next_step"></span></p>
+    <p class="acm-text acm-opt"><span class="acm-k2">Blockers</span> <span data-f="blockers"></span></p>
+    <p class="acm-foot">
+      <span class="acm-opt"><span class="acm-k2">Sources</span> <span data-f="sources"></span></span>
+      <span class="acm-opt"><span class="acm-k2">As of</span> <span data-f="as_of"></span></span>
+    </p>
+  </article></template>
+</div>
+<script>
+const ROOT = document.getElementById('dash-root') || document;
+const params = () => {
+  const p = dash.params() || {};
+  return {view: p.view || 'both', tier: p.tier || '', script: p.script || '', lang: p.lang || '', ctype: p.ctype || '', scope: p.scope === 'all' ? 'all' : 'noft',
+    page: p.page === 'y2027' ? 'y2027' : 'now', band: p.band || '', plang: p.plang || '',
+    pmeasure: p.pmeasure === 'groups' ? 'groups' : 'images'};
+};
+const fmtInt = d3.format(',');
+const fmtShort = (n) => d3.format('.3~s')(n).replace('G', 'B');
+const fmtDay = (s) => {
+  const day = d3.utcParse('%Y-%m-%d')(String(s).slice(0, 10));
+  return day ? d3.utcFormat('%-d %b %Y')(day) : String(s);
+};
+const enc = (s) => String(s).replace(/[%&=]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+const dashOut = (el) => el.replaceChildren(document.createTextNode('—'));
+const bandColor = () => { const colors = dash.colors || []; return colors[2] || colors[0] || 'currentColor'; };
+const smooth = () => (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth');
+
+dash.calc('coverage', {
+  title: 'Most advanced status per language and content type',
+  description: 'For each language and content type, the highest-ranked full-text status and index status among the matrix rows, after the tier and script filters.',
+  inputs: ['capabilities'],
+  fn: (capabilities) => {
+    const filters = dash.params() || {};
+    const cells = new Map();
+    for (const row of capabilities) {
+      if (filters.tier && row.tier !== filters.tier) continue;
+      if (filters.script && row.script !== filters.script) continue;
+      const key = row.language + '|' + row.content_type;
+      let cell = cells.get(key);
+      if (!cell) {
+        cell = {language: row.language, content_type: row.content_type, rows: 0, est_images: 0, ft_rank: 0, ft_status: '', ix_rank: 0, ix_status: ''};
+        cells.set(key, cell);
+      }
+      cell.rows += 1;
+      cell.est_images += Number(row.est_images) || 0;
+      if (Number(row.ft_rank) > cell.ft_rank) { cell.ft_rank = Number(row.ft_rank); cell.ft_status = row.ft_status; }
+      if (Number(row.ix_rank) > cell.ix_rank) { cell.ix_rank = Number(row.ix_rank); cell.ix_status = row.ix_status; }
+    }
+    return Array.from(cells.values());
+  },
+});
+
+dash.calc('status_counts', {
+  title: 'Rows by status',
+  description: 'Number of matrix rows at each full-text status and at each index status, after the tier and script filters.',
+  inputs: ['capabilities'],
+  fn: (capabilities) => {
+    const filters = dash.params() || {};
+    const byRank = new Map();
+    const bump = (rank, status, field) => {
+      if (!rank) return;
+      let entry = byRank.get(rank);
+      if (!entry) { entry = {rank: rank, status: status, full_text_rows: 0, index_rows: 0}; byRank.set(rank, entry); }
+      entry[field] += 1;
+    };
+    for (const row of capabilities) {
+      if (filters.tier && row.tier !== filters.tier) continue;
+      if (filters.script && row.script !== filters.script) continue;
+      bump(Number(row.ft_rank), row.ft_status, 'full_text_rows');
+      bump(Number(row.ix_rank), row.ix_status, 'index_rows');
+    }
+    return Array.from(byRank.values()).sort((a, b) => b.rank - a.rank);
+  },
+});
+
+dash.calc('summary', {
+  title: 'Headline counts',
+  description: 'Rows in view; rows whose full-text status is Production (partial) or higher (rank 8 to 10); rows whose index status is Production (partial) or higher; rows where either status is Gap (no capability), rank 4. All after the tier and script filters.',
+  inputs: ['capabilities'],
+  fn: (capabilities) => {
+    const filters = dash.params() || {};
+    const out = {rows: 0, languages: 0, ft_production: 0, ix_production: 0, gap_rows: 0};
+    const languages = new Set();
+    for (const row of capabilities) {
+      if (filters.tier && row.tier !== filters.tier) continue;
+      if (filters.script && row.script !== filters.script) continue;
+      out.rows += 1;
+      languages.add(row.language);
+      if (Number(row.ft_rank) >= 8) out.ft_production += 1;
+      if (Number(row.ix_rank) >= 8) out.ix_production += 1;
+      if (Number(row.ft_rank) === 4 || Number(row.ix_rank) === 4) out.gap_rows += 1;
+    }
+    out.languages = languages.size;
+    return [out];
+  },
+});
+
+dash.loader('image_counts', {
+  description: 'Reads the CSV exactly as Databricks downloads it, where a quoted language list may hold commas, and turns lang_count, image_count and group_count into numbers.',
+  fn: ({answer}) => {
+    const typed = (row) => Object.assign({}, row, {
+      lang_count: Number(row.lang_count), image_count: Number(row.image_count), group_count: Number(row.group_count),
+    });
+    if (Array.isArray(answer)) return answer.map(typed);
+    if (answer && Array.isArray(answer.rows)) return answer.rows.map(typed);
+    const text = String(answer == null ? '' : answer).replace(/^\uFEFF/, '');
+    const records = [];
+    let record = [], cell = '', quoted = false;
+    for (let i = 0; i < text.length; i += 1) {
+      const ch = text[i];
+      if (quoted) {
+        if (ch !== '"') cell += ch;
+        else if (text[i + 1] === '"') { cell += '"'; i += 1; }
+        else quoted = false;
+      } else if (ch === '"') {
+        quoted = true;
+      } else if (ch === ',') {
+        record.push(cell); cell = '';
+      } else if (ch === '\n' || ch === '\r') {
+        if (ch === '\r' && text[i + 1] === '\n') i += 1;
+        record.push(cell); cell = '';
+        if (record.length > 1 || record[0] !== '') records.push(record);
+        record = [];
+      } else {
+        cell += ch;
+      }
+    }
+    if (cell !== '' || record.length) { record.push(cell); records.push(record); }
+    const header = records.shift() || [];
+    if (header.indexOf('langs') < 0 || header.indexOf('image_count') < 0) {
+      throw new Error('This file is not the ACE image counts feed: the langs and image_count columns are missing.');
+    }
+    return records.map((cells) => {
+      const row = {};
+      header.forEach((name, j) => { row[name] = cells[j] == null ? '' : cells[j]; });
+      return typed(row);
+    });
+  },
+});
+
+dash.calc('language_counts', {
+  title: 'Image counts by language',
+  description: 'For each language of the matrix, images in groups that carry only that language, from the Databricks counts. The unindexed figures cover mid-tier and top-tier groups and leave out PIPA images, which are counted on their own. A group with any top-tier record type counts as top-tier; mid-tier means mid-tier record types and no top-tier ones.',
+  inputs: ['languages', 'image_counts'],
+  fn: (languages, imageCounts) => {
+    const blank = () => ({mid_tier_unindexed: 0, top_tier_unindexed: 0, mid_tier_no_full_text: 0, top_tier_no_full_text: 0, pipa_unindexed: 0, images_single_language: 0});
+    const byCode = new Map();
+    for (const row of imageCounts) {
+      if (Number(row.lang_count) !== 1) continue;
+      const images = Number(row.image_count) || 0;
+      let counts = byCode.get(row.langs);
+      if (!counts) { counts = blank(); byCode.set(row.langs, counts); }
+      counts.images_single_language += images;
+      if (row.index_status !== 'Unindexed') continue;
+      const tier = row.tier === 'Mid-tier only' ? 'mid' : (row.tier === 'Top-tier only' || row.tier === 'Top + mid-tier' ? 'top' : '');
+      if (!tier) continue;
+      if (row.pipa === 'Yes') { counts.pipa_unindexed += images; continue; }
+      counts[tier + '_tier_unindexed'] += images;
+      if (row.full_text === 'Not processed') counts[tier + '_tier_no_full_text'] += images;
+    }
+    return languages.map((lang) => Object.assign({language: lang.language, code: lang.code, script: lang.script}, byCode.get(lang.code) || blank()));
+  },
+});
+
+dash.calc('backlog', {
+  title: 'Unindexed images by language',
+  description: 'Mid-tier and top-tier unindexed images for each language that has any, largest first, after the script filter. Counts only images not yet processed for full text, or every unindexed image, as chosen above the chart.',
+  inputs: ['language_counts'],
+  fn: (languageCounts) => {
+    const filters = dash.params() || {};
+    const all = filters.scope === 'all';
+    return (languageCounts || [])
+      .filter((lang) => !filters.script || lang.script === filters.script)
+      .map((lang) => {
+        const mid = Number(all ? lang.mid_tier_unindexed : lang.mid_tier_no_full_text) || 0;
+        const top = Number(all ? lang.top_tier_unindexed : lang.top_tier_no_full_text) || 0;
+        return {language: lang.language, mid_tier: mid, top_tier: top, total: mid + top};
+      })
+      .filter((lang) => lang.total > 0)
+      .sort((a, b) => b.total - a.total);
+  },
+});
+
+dash.calc('feed_info', {
+  title: 'Count date and images outside the bars',
+  description: 'The latest run date in the Databricks counts, and the unindexed mid-tier and top-tier images, without PIPA, in groups that carry several languages or none. Counts only images not yet processed for full text, or every unindexed image, as chosen above the chart.',
+  inputs: ['image_counts'],
+  fn: (imageCounts) => {
+    const all = (dash.params() || {}).scope === 'all';
+    let runDate = '', otherGroups = 0;
+    for (const row of imageCounts) {
+      if (String(row.run_date || '') > runDate) runDate = String(row.run_date);
+      if (Number(row.lang_count) === 1 || row.index_status !== 'Unindexed' || row.pipa === 'Yes') continue;
+      if (row.tier !== 'Mid-tier only' && row.tier !== 'Top-tier only' && row.tier !== 'Top + mid-tier') continue;
+      if (!all && row.full_text !== 'Not processed') continue;
+      otherGroups += Number(row.image_count) || 0;
+    }
+    return [{run_date: runDate, other_groups: otherGroups}];
+  },
+});
+
+dash.loader('country_counts_2027', {
+  description: 'Reads the CSV exactly as Databricks downloads it, where a quoted field may hold commas, and turns the row number and the five count columns into numbers.',
+  fn: ({answer}) => {
+    const typed = (row) => Object.assign({}, row, {
+      plan_row: Number(row.plan_row), plan_natural_groups: Number(row.plan_natural_groups), natural_groups: Number(row.natural_groups),
+      natural_images: Number(row.natural_images), unindexed_groups: Number(row.unindexed_groups), unindexed_images: Number(row.unindexed_images),
+    });
+    if (Array.isArray(answer)) return answer.map(typed);
+    if (answer && Array.isArray(answer.rows)) return answer.rows.map(typed);
+    const text = String(answer == null ? '' : answer).replace(/^\uFEFF/, '');
+    const records = [];
+    let record = [], cell = '', quoted = false;
+    for (let i = 0; i < text.length; i += 1) {
+      const ch = text[i];
+      if (quoted) {
+        if (ch !== '"') cell += ch;
+        else if (text[i + 1] === '"') { cell += '"'; i += 1; }
+        else quoted = false;
+      } else if (ch === '"') {
+        quoted = true;
+      } else if (ch === ',') {
+        record.push(cell); cell = '';
+      } else if (ch === '\n' || ch === '\r') {
+        if (ch === '\r' && text[i + 1] === '\n') i += 1;
+        record.push(cell); cell = '';
+        if (record.length > 1 || record[0] !== '') records.push(record);
+        record = [];
+      } else {
+        cell += ch;
+      }
+    }
+    if (cell !== '' || record.length) { record.push(cell); records.push(record); }
+    const header = records.shift() || [];
+    const needed = ['plan_row', 'country', 'record_type', 'unindexed_groups', 'unindexed_images'];
+    const missing = needed.filter((name) => header.indexOf(name) < 0);
+    if (missing.length) {
+      throw new Error('This file is not the 2027 country counts: it has no column named ' + missing.join(', ') + '.');
+    }
+    return records.map((cells) => {
+      const row = {};
+      header.forEach((name, j) => { row[name] = cells[j] == null ? '' : cells[j]; });
+      return typed(row);
+    });
+  },
+});
+
+dash.calc('plan_rows', {
+  title: '2027 record sets with language and counts',
+  description: 'Each row of the 2027 list with the language its country is counted under and the Databricks counts for the same list row, after the priority band and language choices, High priority first and then by unindexed images. Counts attach only where the row number, country and record type all agree. Counted vs list is unindexed groups as a whole percentage of the groups on the list.',
+  inputs: ['priorities_2027', 'country_languages', 'country_counts_2027'],
+  fn: (priorities, countryLanguages, countryCounts) => {
+    const filters = dash.params() || {};
+    const languageOf = new Map(countryLanguages.map((row) => [row.country, row.language]));
+    const countsOf = new Map(countryCounts.map((row) => [String(row.plan_row), row]));
+    const rank = {High: 1, Medium: 2, Low: 3};
+    return priorities
+      .map((row) => {
+        const found = countsOf.get(String(row.order));
+        const counts = found && found.country === row.country && found.record_type === row.record_type ? found : null;
+        const planGroups = Number(row.natural_groups) || 0;
+        const unindexedGroups = counts ? Number(counts.unindexed_groups) || 0 : null;
+        return {
+          id: row.id, language: languageOf.get(row.country) || 'Not set', country: row.country, record_type: row.record_type,
+          priority_band: row.priority_band, plan_groups: planGroups, unindexed_groups: unindexedGroups,
+          counted_pct: counts && planGroups ? Math.round((100 * unindexedGroups) / planGroups) : null,
+          unindexed_images: counts ? Number(counts.unindexed_images) || 0 : null,
+          all_groups: counts ? Number(counts.natural_groups) || 0 : null,
+          all_images: counts ? Number(counts.natural_images) || 0 : null,
+          notes: row.notes,
+        };
+      })
+      .filter((row) => (!filters.band || row.priority_band === filters.band) && (!filters.plang || row.language === filters.plang))
+      .sort((a, b) => (rank[a.priority_band] || 9) - (rank[b.priority_band] || 9)
+        || (b.unindexed_images || 0) - (a.unindexed_images || 0) || b.plan_groups - a.plan_groups);
+  },
+});
+
+dash.calc('plan_languages', {
+  title: '2027 workstreams by language',
+  description: 'For each language on the 2027 list, after the priority band choice: unindexed images and natural groups by band and groups on the list, from the Databricks country counts and the list, beside images not yet in full text, from the Databricks language counts. Ordered by High priority content, then Medium, then Low, in images or in natural groups as chosen above the chart.',
+  inputs: ['priorities_2027', 'country_languages', 'country_counts_2027', 'language_counts'],
+  fn: (priorities, countryLanguages, countryCounts, languageCounts) => {
+    const filters = dash.params() || {};
+    const unit = filters.pmeasure === 'groups' ? 'groups' : 'images';
+    const languageOf = new Map(countryLanguages.map((row) => [row.country, row.language]));
+    const countsOf = new Map(countryCounts.map((row) => [String(row.plan_row), row]));
+    const counted = new Map((languageCounts || []).map((row) => [row.language, row]));
+    const byLanguage = new Map();
+    for (const row of priorities) {
+      if (filters.band && row.priority_band !== filters.band) continue;
+      const language = languageOf.get(row.country) || 'Not set';
+      let entry = byLanguage.get(language);
+      if (!entry) {
+        const images = counted.get(language) || {};
+        const mid = Number(images.mid_tier_no_full_text) || 0, top = Number(images.top_tier_no_full_text) || 0;
+        entry = {language: language, countries: [], plan_groups: 0, unindexed_groups: 0, unindexed_images: 0,
+          high_images: 0, medium_images: 0, low_images: 0, other_images: 0, high_groups: 0, medium_groups: 0, low_groups: 0, other_groups: 0,
+          mid_tier_no_full_text: mid, top_tier_no_full_text: top, no_full_text: mid + top};
+        byLanguage.set(language, entry);
+      }
+      if (entry.countries.indexOf(row.country) < 0) entry.countries.push(row.country);
+      entry.plan_groups += Number(row.natural_groups) || 0;
+      const found = countsOf.get(String(row.order));
+      if (!found || found.country !== row.country || found.record_type !== row.record_type) continue;
+      const groups = Number(found.unindexed_groups) || 0, pictures = Number(found.unindexed_images) || 0;
+      const band = row.priority_band === 'High' ? 'high' : row.priority_band === 'Medium' ? 'medium' : row.priority_band === 'Low' ? 'low' : 'other';
+      entry[band + '_groups'] += groups;
+      entry[band + '_images'] += pictures;
+      entry.unindexed_groups += groups;
+      entry.unindexed_images += pictures;
+    }
+    return Array.from(byLanguage.values())
+      .map((entry) => Object.assign(entry, {countries: entry.countries.join(', ')}))
+      .sort((a, b) => b['high_' + unit] - a['high_' + unit] || b['medium_' + unit] - a['medium_' + unit]
+        || b['low_' + unit] - a['low_' + unit] || b['other_' + unit] - a['other_' + unit] || b.plan_groups - a.plan_groups);
+  },
+});
+
+dash.calc('plan_summary', {
+  title: '2027 list totals',
+  description: 'Record sets, countries and languages on the whole 2027 list and its groups, with the record sets that have a Databricks count and their unindexed groups and images, images also by priority band. The choices on the page do not change it.',
+  inputs: ['priorities_2027', 'country_languages', 'country_counts_2027'],
+  fn: (priorities, countryLanguages, countryCounts) => {
+    const languageOf = new Map(countryLanguages.map((row) => [row.country, row.language]));
+    const countsOf = new Map(countryCounts.map((row) => [String(row.plan_row), row]));
+    const out = {record_sets: 0, counted_sets: 0, countries: 0, languages: 0, plan_groups: 0, unindexed_groups: 0, unindexed_images: 0,
+      high_images: 0, medium_images: 0, low_images: 0};
+    const countries = new Set(), languages = new Set();
+    for (const row of priorities) {
+      out.record_sets += 1;
+      out.plan_groups += Number(row.natural_groups) || 0;
+      countries.add(row.country);
+      languages.add(languageOf.get(row.country) || 'Not set');
+      const found = countsOf.get(String(row.order));
+      if (!found || found.country !== row.country || found.record_type !== row.record_type) continue;
+      const pictures = Number(found.unindexed_images) || 0;
+      out.counted_sets += 1;
+      out.unindexed_groups += Number(found.unindexed_groups) || 0;
+      out.unindexed_images += pictures;
+      if (row.priority_band === 'High') out.high_images += pictures;
+      else if (row.priority_band === 'Medium') out.medium_images += pictures;
+      else if (row.priority_band === 'Low') out.low_images += pictures;
+    }
+    out.countries = countries.size;
+    out.languages = languages.size;
+    return [out];
+  },
+});
+
+const hideEmpty = (node, attr) => {
+  node.querySelectorAll('.acm-opt').forEach((wrap) => {
+    wrap.hidden = Array.from(wrap.querySelectorAll('[' + attr + ']')).every((n) => !n.textContent);
+  });
+};
+
+const makeTip = (el, selector) => {
+  const tpl = ROOT.querySelector(selector);
+  if (!tpl || !tpl.content || !tpl.content.firstElementChild) return {show() {}, hide() {}};
+  const tip = tpl.content.firstElementChild.cloneNode(true);
+  const colors = dash.colors || [];
+  tip.querySelectorAll('.acm-c0').forEach((n) => { n.style.backgroundColor = colors[0] || ''; });
+  tip.querySelectorAll('.acm-c1').forEach((n) => { n.style.backgroundColor = colors[1] || ''; });
+  tip.querySelectorAll('.acm-bsw').forEach((n) => { n.style.backgroundColor = bandColor(); });
+  tip.hidden = true;
+  el.appendChild(tip);
+  return {
+    show(event, values) {
+      tip.querySelectorAll('[data-t]').forEach((n) => {
+        const v = values[n.dataset.t];
+        n.textContent = v == null ? '' : String(v);
+      });
+      tip.querySelectorAll('[data-sw]').forEach((n) => { n.style.backgroundColor = 'var(--acm-s' + (values[n.dataset.sw] || 0) + ')'; });
+      hideEmpty(tip, 'data-t');
+      tip.hidden = false;
+      const pt = d3.pointer(event, el);
+      const w = tip.offsetWidth, h = tip.offsetHeight, W = el.clientWidth, H = el.clientHeight;
+      tip.style.left = Math.max(0, Math.min(pt[0] + 12, W - w - 2)) + 'px';
+      tip.style.top = (pt[1] + 16 + h > H && pt[1] - h - 8 > 0 ? pt[1] - h - 8 : pt[1] + 16) + 'px';
+    },
+    hide() { tip.hidden = true; },
+  };
+};
+
+const reveal = () => {
+  const panel = ROOT.querySelector('.acm-panel');
+  if (!panel) return;
+  const r = panel.getBoundingClientRect();
+  const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+  if (r.top < 0 || r.top > vh * 0.75) panel.scrollIntoView({behavior: smooth(), block: 'start'});
+};
+const pick = (selection, clear) => {
+  dash.setParams(clear ? {lang: '', ctype: ''} : selection);
+  if (!clear) requestAnimationFrame(() => requestAnimationFrame(reveal));
+};
+const onKey = (fn) => (event, d) => {
+  if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); fn(event, d); }
+};
+
+ROOT.querySelectorAll('.acm-seg-b[data-view]').forEach((b) => b.addEventListener('click', () => dash.setParams({view: b.dataset.view})));
+ROOT.querySelectorAll('.acm-seg-b[data-scope]').forEach((b) => b.addEventListener('click', () => dash.setParams({scope: b.dataset.scope})));
+ROOT.querySelectorAll('.acm-seg-b[data-page]').forEach((b) => b.addEventListener('click', () => {
+  dash.setParams({page: b.dataset.page});
+  if (dash.setLink) dash.setLink(b.dataset.page === 'y2027' ? 'acm-2027' : 'acm-now');
+}));
+ROOT.querySelectorAll('.acm-seg-b[data-pmeasure]').forEach((b) => b.addEventListener('click', () => dash.setParams({pmeasure: b.dataset.pmeasure})));
+ROOT.querySelectorAll('.acm-plan-clear').forEach((b) => b.addEventListener('click', () => dash.setParams({plang: ''})));
+const pickPlan = (language) => dash.setParams({plang: params().plang === language ? '' : language});
+ROOT.querySelectorAll('.acm-clear').forEach((b) => b.addEventListener('click', () => dash.setParams({lang: '', ctype: ''})));
+ROOT.querySelectorAll('.acm-back').forEach((b) => b.addEventListener('click', () => {
+  const m = ROOT.querySelector('#acm-matrix');
+  if (m) m.scrollIntoView({behavior: smooth(), block: 'start'});
+}));
+
+dash.onData(() => {
+  const p = params();
+  ROOT.querySelectorAll('.acm-seg-b[data-view]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.view === p.view)));
+  ROOT.querySelectorAll('.acm-seg-b[data-scope]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.scope === p.scope)));
+  const picked = !!(p.lang || p.ctype);
+  ROOT.querySelectorAll('.acm-hint').forEach((n) => { n.hidden = picked; });
+  ROOT.querySelectorAll('.acm-detail-wrap').forEach((n) => { n.hidden = !picked; });
+  const colors = dash.colors || [];
+  ROOT.querySelectorAll('.acm-c0').forEach((n) => { n.style.backgroundColor = colors[0] || ''; });
+  ROOT.querySelectorAll('.acm-c1').forEach((n) => { n.style.backgroundColor = colors[1] || ''; });
+  ROOT.querySelectorAll('.acm-bsw').forEach((n) => { n.style.backgroundColor = bandColor(); });
+  ROOT.querySelectorAll('.acm-seg-b[data-page]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.page === p.page)));
+  ROOT.querySelectorAll('#acm-now').forEach((n) => { n.hidden = p.page !== 'now'; });
+  ROOT.querySelectorAll('#acm-2027').forEach((n) => { n.hidden = p.page !== 'y2027'; });
+  ROOT.querySelectorAll('.acm-plan-sel').forEach((n) => { n.hidden = !p.plang; });
+  ROOT.querySelectorAll('.acm-seg-b[data-pmeasure]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.pmeasure === p.pmeasure)));
+  ROOT.querySelectorAll('.acm-plan-tickkey').forEach((n) => { n.hidden = p.pmeasure !== 'groups'; });
+});
+
+dash.draw('sum', (el) => {
+  const s = dash.data('summary');
+  const row = s.status === 'ok' && s.data && s.data[0];
+  el.textContent = row && row[el.dataset.field] != null ? fmtInt(row[el.dataset.field]) : '—';
+});
+
+dash.draw('feed', (el) => {
+  const d = dash.data('feed_info');
+  const row = d.status === 'ok' && d.data && d.data[0];
+  const v = row && row.run_date ? row[el.dataset.field] : null;
+  if (v == null || v === '') { el.textContent = '—'; return; }
+  el.textContent = el.dataset.field === 'run_date' ? fmtDay(v) : fmtInt(v);
+});
+
+dash.draw('seltitle', (el) => {
+  const p = params();
+  el.textContent = [p.lang, p.ctype].filter(Boolean).join(' · ') || '—';
+});
+
+const fillSelect = (sel, first, values, key) => {
+  sel.replaceChildren(new Option(first, ''), ...values.map((v) => new Option(v)));
+  sel.value = params()[key];
+  sel.onchange = () => dash.setParams({[key]: sel.value});
+};
+dash.draw('tier', (sel) => {
+  const d = dash.data('capabilities');
+  const values = d.status === 'ok' ? Array.from(new Set(d.data.map((r) => r.tier).filter(Boolean))).sort() : [];
+  fillSelect(sel, 'All tiers', values, 'tier');
+});
+dash.draw('script', (sel) => {
+  const d = dash.data('languages');
+  const values = d.status === 'ok' ? Array.from(new Set(d.data.map((r) => r.script).filter(Boolean))).sort() : [];
+  fillSelect(sel, 'All scripts', values, 'script');
+});
+
+dash.draw('statusbar', (el) => {
+  const d = dash.data('status_counts');
+  const field = el.dataset.kind;
+  const rows = d.status === 'ok' && d.data ? d.data.filter((r) => r[field] > 0) : [];
+  if (!rows.length) { dashOut(el); return; }
+  const W = Math.max(el.clientWidth, 120), H = 26;
+  const total = d3.sum(rows, (r) => r[field]);
+  let x = 0;
+  const segs = rows.map((r) => { const w = (r[field] / total) * W; const s = {r: r, x: x, w: w}; x += w; return s; });
+  el.replaceChildren();
+  const svg = d3.select(el).append('svg').attr('class', 'acm-svg').attr('aria-hidden', 'true')
+    .attr('viewBox', '0 0 ' + W + ' ' + H).attr('width', '100%').attr('height', H);
+  const tip = makeTip(el, 'template.acm-tip-bar-tpl');
+  const g = svg.selectAll('g').data(segs).join('g').attr('transform', (s) => 'translate(' + s.x + ',0)');
+  g.append('rect').attr('width', (s) => Math.max(s.w - 1.5, 1)).attr('height', H).attr('rx', 3)
+    .style('fill', (s) => 'var(--acm-s' + s.r.rank + ')')
+    .on('pointerenter pointermove', (event, s) => tip.show(event, {status: s.r.status, count: s.r[field], rank: s.r.rank}))
+    .on('pointerleave', () => tip.hide());
+  g.filter((s) => s.w >= 22).append('text').attr('class', (s) => 'acm-seg-t acm-on' + s.r.rank)
+    .attr('x', (s) => (s.w - 1.5) / 2).attr('y', H / 2).attr('dy', '0.35em').attr('text-anchor', 'middle')
+    .text((s) => s.r[field]);
+});
+
+dash.draw('matrix', (el) => {
+  const cov = dash.data('coverage'), langs = dash.data('languages'), caps = dash.data('capabilities');
+  if (cov.status !== 'ok' || langs.status !== 'ok' || caps.status !== 'ok' || !cov.data) { dashOut(el); return; }
+  const p = params();
+  const types = Array.from(d3.rollup(caps.data, (v) => d3.min(v, (r) => Number(r.content_type_order) || 999), (r) => r.content_type))
+    .sort((a, b) => a[1] - b[1]).map((d) => d[0]);
+  const rowsL = langs.data.filter((l) => !p.script || l.script === p.script);
+  if (!types.length || !rowsL.length) { dashOut(el); return; }
+  const cellOf = new Map(cov.data.map((c) => [c.language + '|' + c.content_type, c]));
+  const W = Math.max(el.clientWidth, 260), narrow = W < 620;
+  const rowH = narrow ? 18 : 22, gap = 2, n = types.length;
+  el.replaceChildren();
+  const svg = d3.select(el).append('svg').attr('class', 'acm-svg' + (narrow ? ' acm-narrow' : '')).attr('width', '100%');
+  const rl = svg.append('g').selectAll('text').data(rowsL).join('text').attr('class', 'acm-rowlab').text((l) => l.language);
+  let labelW = 0;
+  rl.each(function () { labelW = Math.max(labelW, this.getComputedTextLength()); });
+  labelW = Math.min(labelW + 12, W * 0.4);
+  const short = (s) => (narrow && s.length > 24 ? s.slice(0, 23) + '…' : s);
+  const cl = svg.append('g').selectAll('text').data(types).join('text').attr('class', 'acm-collab').text(short);
+  const lens = [];
+  cl.each(function () { lens.push(this.getComputedTextLength()); });
+  const ang = narrow ? 90 : 42, rad = (ang * Math.PI) / 180;
+  let cw = (W - labelW) / n;
+  if (!narrow) {
+    lens.forEach((len, j) => { cw = Math.min(cw, (W - labelW - len * Math.cos(rad) - 6) / (j + 0.5)); });
+    cw = Math.min(cw, 46);
+  }
+  cw = Math.max(cw, 6);
+  const headH = (d3.max(lens) || 0) * Math.sin(rad) + 14;
+  const H = headH + rowsL.length * rowH + 4;
+  svg.attr('viewBox', '0 0 ' + W + ' ' + H).attr('height', H);
+  const x0 = labelW, y0 = headH, w = Math.max(cw - gap, 2), h = rowH - gap;
+
+  const pickLang = (event, l) => pick({lang: l.language, ctype: ''}, p.lang === l.language && !p.ctype);
+  const pickType = (event, t) => pick({lang: '', ctype: t}, p.ctype === t && !p.lang);
+  rl.attr('x', x0 - 8).attr('y', (l, i) => y0 + i * rowH + h / 2).attr('dy', '0.35em').attr('text-anchor', 'end')
+    .classed('acm-sel', (l) => l.language === p.lang)
+    .attr('tabindex', 0).attr('role', 'button')
+    .on('click', pickLang).on('keydown', onKey(pickLang));
+  cl.attr('transform', (t, j) => 'translate(' + (x0 + j * cw + w / 2 + (narrow ? 4 : 0)) + ',' + (y0 - 6) + ') rotate(' + -ang + ')')
+    .classed('acm-sel', (t) => t === p.ctype)
+    .attr('tabindex', 0).attr('role', 'button')
+    .on('click', pickType).on('keydown', onKey(pickType));
+
+  const cells = [];
+  rowsL.forEach((l, i) => types.forEach((t, j) => cells.push({l: l, t: t, i: i, j: j, c: cellOf.get(l.language + '|' + t)})));
+  const g = svg.append('g').selectAll('g').data(cells).join('g')
+    .attr('transform', (d) => 'translate(' + (x0 + d.j * cw) + ',' + (y0 + d.i * rowH) + ')');
+  g.filter((d) => !d.c).append('circle').attr('class', 'acm-dot').attr('cx', w / 2).attr('cy', h / 2).attr('r', 1.3);
+  const full = g.filter((d) => !!d.c);
+  if (p.view === 'both') {
+    const half = Math.max(w / 2 - 0.5, 1);
+    full.append('rect').attr('width', half).attr('height', h).attr('rx', 2).style('fill', (d) => 'var(--acm-s' + d.c.ft_rank + ')');
+    full.append('rect').attr('x', w - half).attr('width', half).attr('height', h).attr('rx', 2).style('fill', (d) => 'var(--acm-s' + d.c.ix_rank + ')');
+  } else {
+    const key = p.view === 'ft' ? 'ft_rank' : 'ix_rank';
+    full.append('rect').attr('width', w).attr('height', h).attr('rx', 2).style('fill', (d) => 'var(--acm-s' + d.c[key] + ')');
+  }
+  const li = rowsL.findIndex((l) => l.language === p.lang), ti = types.indexOf(p.ctype);
+  if (li >= 0) svg.append('rect').attr('class', 'acm-band').attr('x', x0 - 2).attr('y', y0 + li * rowH - 2).attr('width', n * cw + 2).attr('height', rowH + 2).attr('rx', 4);
+  if (ti >= 0) svg.append('rect').attr('class', 'acm-band').attr('x', x0 + ti * cw - 2).attr('y', y0 - 2).attr('width', cw + 2).attr('height', rowsL.length * rowH + 2).attr('rx', 4);
+  const tip = makeTip(el, 'template.acm-tip-cell-tpl');
+  full.append('rect').attr('class', 'acm-hit').attr('width', cw).attr('height', rowH)
+    .on('pointerenter pointermove', (event, d) => tip.show(event, {
+      language: d.l.language, content_type: d.t, ft_status: d.c.ft_status || '—', ix_status: d.c.ix_status || '—',
+      ft_rank: d.c.ft_rank, ix_rank: d.c.ix_rank, rows: d.c.rows, images: d.c.est_images ? fmtShort(d.c.est_images) : '',
+    }))
+    .on('pointerleave', () => tip.hide())
+    .on('click', (event, d) => pick({lang: d.l.language, ctype: d.t}, p.lang === d.l.language && p.ctype === d.t));
+});
+
+const fillCard = (node, row, source, where, counts) => {
+  node.querySelectorAll('[data-f]').forEach((n) => {
+    const field = n.dataset.f, from = n.dataset.from;
+    const v = from ? (counts && Number(counts[field]) ? counts[field] : '') : row[field];
+    n.textContent = v == null || v === '' ? '' : (n.dataset.num ? fmtInt(Number(v)) : String(v));
+    n.setAttribute('data-source', from || source);
+    n.setAttribute('data-field', field);
+    n.setAttribute('data-where', where);
+    if (n.dataset.rankf) {
+      const rank = Number(row[n.dataset.rankf]) || 0;
+      n.style.backgroundColor = 'var(--acm-s' + rank + ')';
+      n.classList.add('acm-on' + rank);
+    }
+  });
+  hideEmpty(node, 'data-f');
+  return node;
+};
+const cloneTpl = (selector) => {
+  const tpl = ROOT.querySelector(selector);
+  return tpl && tpl.content && tpl.content.firstElementChild ? tpl.content.firstElementChild.cloneNode(true) : null;
+};
+
+dash.draw('detail', (el) => {
+  const caps = dash.data('capabilities'), langs = dash.data('languages'), counted = dash.data('language_counts');
+  if (caps.status !== 'ok' || langs.status !== 'ok') { dashOut(el); return; }
+  const p = params();
+  const out = [];
+  if (p.lang) {
+    const l = langs.data.find((x) => x.language === p.lang);
+    const node = l && cloneTpl('template.acm-lang-tpl');
+    const counts = l && counted.status === 'ok' && counted.data ? counted.data.find((x) => x.language === l.language) : null;
+    if (node) out.push(fillCard(node, l, 'languages', 'language=' + enc(l.language), counts));
+  }
+  const rows = caps.data.filter((r) => (!p.lang || r.language === p.lang) && (!p.ctype || r.content_type === p.ctype)
+    && (!p.tier || r.tier === p.tier) && (!p.script || r.script === p.script));
+  rows.forEach((r) => {
+    const node = cloneTpl('template.acm-card-tpl');
+    if (node) out.push(fillCard(node, r, 'capabilities', 'id=' + enc(r.id)));
+  });
+  if (!rows.length) { const none = cloneTpl('template.acm-none-tpl'); if (none) out.push(none); }
+  el.replaceChildren(...out);
+});
+
+dash.draw('backlog', (el) => {
+  const d = dash.data('backlog');
+  const rows = d.status === 'ok' && d.data ? d.data : [];
+  if (!rows.length) { dashOut(el); return; }
+  const p = params();
+  const W = Math.max(el.clientWidth, 240), rowH = 24, colors = dash.colors || [];
+  el.replaceChildren();
+  const svg = d3.select(el).append('svg').attr('class', 'acm-svg').attr('aria-hidden', 'true').attr('width', '100%');
+  const lab = svg.append('g').selectAll('text').data(rows).join('text').attr('class', 'acm-rowlab').text((r) => r.language);
+  let lw = 0;
+  lab.each(function () { lw = Math.max(lw, this.getComputedTextLength()); });
+  lw = Math.min(lw + 12, W * 0.4);
+  const end = svg.append('g').selectAll('text').data(rows).join('text').attr('class', 'acm-endlab').text((r) => fmtShort(r.total));
+  let ew = 0;
+  end.each(function () { ew = Math.max(ew, this.getComputedTextLength()); });
+  ew += 10;
+  const x = d3.scaleLinear().domain([0, d3.max(rows, (r) => r.total) || 1]).range([0, Math.max(W - lw - ew, 40)]);
+  const H = rows.length * rowH + 2;
+  svg.attr('viewBox', '0 0 ' + W + ' ' + H).attr('height', H);
+  lab.attr('x', lw - 8).attr('y', (r, i) => i * rowH + rowH / 2).attr('dy', '0.35em').attr('text-anchor', 'end')
+    .classed('acm-sel', (r) => r.language === p.lang);
+  end.attr('x', (r) => lw + x(r.total) + 6).attr('y', (r, i) => i * rowH + rowH / 2).attr('dy', '0.35em');
+  const tip = makeTip(el, 'template.acm-tip-vol-tpl');
+  const g = svg.append('g').selectAll('g').data(rows).join('g').attr('transform', (r, i) => 'translate(' + lw + ',' + (i * rowH + 4) + ')');
+  g.append('rect').attr('height', rowH - 8).attr('rx', 2).attr('width', (r) => x(r.mid_tier)).style('fill', colors[0] || 'currentColor');
+  g.append('rect').attr('height', rowH - 8).attr('rx', 2).attr('x', (r) => x(r.mid_tier) + (r.mid_tier && r.top_tier ? 1 : 0))
+    .attr('width', (r) => Math.max(x(r.top_tier) - (r.mid_tier && r.top_tier ? 1 : 0), 0)).style('fill', colors[1] || 'currentColor');
+  svg.append('g').selectAll('rect').data(rows).join('rect').attr('class', 'acm-hit')
+    .attr('x', 0).attr('y', (r, i) => i * rowH).attr('width', W).attr('height', rowH)
+    .on('pointerenter pointermove', (event, r) => tip.show(event, {language: r.language, mid: fmtInt(r.mid_tier), top: fmtInt(r.top_tier)}))
+    .on('pointerleave', () => tip.hide())
+    .on('click', (event, r) => pick({lang: r.language, ctype: ''}, p.lang === r.language && !p.ctype));
+});
+
+dash.draw('plansum', (el) => {
+  const s = dash.data('plan_summary');
+  const row = s.status === 'ok' && s.data && s.data[0];
+  el.textContent = row && row[el.dataset.field] != null ? fmtInt(row[el.dataset.field]) : '—';
+});
+
+dash.draw('plansel', (el) => {
+  el.textContent = params().plang || '—';
+});
+
+dash.draw('band', (sel) => {
+  const d = dash.data('priorities_2027');
+  const rank = {High: 1, Medium: 2, Low: 3};
+  const values = d.status === 'ok'
+    ? Array.from(new Set(d.data.map((r) => r.priority_band).filter(Boolean))).sort((a, b) => (rank[a] || 9) - (rank[b] || 9) || String(a).localeCompare(String(b)))
+    : [];
+  fillSelect(sel, 'All priority bands', values, 'band');
+});
+
+const drawLanguageBars = (el, rows, opts) => {
+  if (!rows.length) { dashOut(el); return; }
+  const p = params();
+  const W = Math.max(el.clientWidth, 240), rowH = 24;
+  el.replaceChildren();
+  const svg = d3.select(el).append('svg').attr('class', 'acm-svg').attr('width', '100%');
+  const lab = svg.append('g').selectAll('text').data(rows).join('text').attr('class', 'acm-rowlab').text((r) => r.language);
+  let lw = 0;
+  lab.each(function () { lw = Math.max(lw, this.getComputedTextLength()); });
+  lw = Math.min(lw + 12, W * 0.4);
+  const end = svg.append('g').selectAll('text').data(rows).join('text').attr('class', 'acm-endlab').text((r) => fmtShort(r[opts.total]));
+  let ew = 0;
+  end.each(function () { ew = Math.max(ew, this.getComputedTextLength()); });
+  ew += 10;
+  const reach = (r) => Math.max(Number(r[opts.total]) || 0, opts.marker ? Number(r[opts.marker]) || 0 : 0);
+  const x = d3.scaleLinear().domain([0, d3.max(rows, reach) || 1]).range([0, Math.max(W - lw - ew, 40)]);
+  const H = rows.length * rowH + 2;
+  svg.attr('viewBox', '0 0 ' + W + ' ' + H).attr('height', H);
+  const choose = (event, r) => pickPlan(r.language);
+  lab.attr('x', lw - 8).attr('y', (r, i) => i * rowH + rowH / 2).attr('dy', '0.35em').attr('text-anchor', 'end')
+    .classed('acm-sel', (r) => r.language === p.plang)
+    .attr('tabindex', 0).attr('role', 'button')
+    .on('click', choose).on('keydown', onKey(choose));
+  end.each(function (r) {
+    const barEnd = x(Number(r[opts.total]) || 0), mark = opts.marker ? x(Number(r[opts.marker]) || 0) : 0;
+    const crowded = mark > barEnd && mark - barEnd < this.getComputedTextLength() + 14;
+    d3.select(this).attr('x', lw + (crowded ? mark : barEnd) + 6);
+  }).attr('y', (r, i) => i * rowH + rowH / 2).attr('dy', '0.35em');
+  const tip = makeTip(el, opts.tipTpl);
+  const g = svg.append('g').selectAll('g').data(rows).join('g').attr('transform', (r, i) => 'translate(' + lw + ',' + (i * rowH + 4) + ')');
+  g.each(function (r) {
+    let x0 = 0;
+    opts.segments.forEach((seg) => {
+      const w = x(Number(r[seg.field]) || 0);
+      if (!(w > 0)) return;
+      const gap = x0 > 0 ? 1 : 0;
+      d3.select(this).append('rect').attr('height', rowH - 8).attr('rx', 2).attr('x', x0 + gap).attr('width', Math.max(w - gap, 0.5))
+        .style('fill', seg.fill).style('opacity', seg.opacity == null ? null : seg.opacity);
+      x0 += w;
+    });
+    if (opts.marker && Number(r[opts.marker]) > 0) {
+      d3.select(this).append('line').attr('class', 'acm-mark').attr('x1', x(Number(r[opts.marker]))).attr('x2', x(Number(r[opts.marker])))
+        .attr('y1', -3).attr('y2', rowH - 5);
+    }
+  });
+  svg.append('g').selectAll('rect').data(rows).join('rect').attr('class', 'acm-hit')
+    .attr('x', 0).attr('y', (r, i) => i * rowH).attr('width', W).attr('height', rowH)
+    .on('pointerenter pointermove', (event, r) => tip.show(event, opts.tip(r)))
+    .on('pointerleave', () => tip.hide())
+    .on('click', choose);
+};
+
+dash.draw('planindex', (el) => {
+  const d = dash.data('plan_languages');
+  const unit = params().pmeasure;
+  const total = unit === 'groups' ? 'unindexed_groups' : 'unindexed_images';
+  const rows = d.status === 'ok' && d.data ? d.data.filter((r) => r[total] > 0 || (unit === 'groups' && r.plan_groups > 0)) : [];
+  const fill = bandColor();
+  const shown = (n) => (n ? fmtInt(n) : '');
+  drawLanguageBars(el, rows, {
+    total: total,
+    marker: unit === 'groups' ? 'plan_groups' : '',
+    segments: [
+      {field: 'high_' + unit, fill: fill, opacity: 1}, {field: 'medium_' + unit, fill: fill, opacity: 0.6}, {field: 'low_' + unit, fill: fill, opacity: 0.3},
+      {field: 'other_' + unit, fill: 'var(--cds-chart-muted, currentColor)', opacity: 0.5},
+    ],
+    tipTpl: 'template.acm-tip-plan-tpl',
+    tip: (r) => ({language: r.language, countries: r.countries, high: shown(r['high_' + unit]), medium: shown(r['medium_' + unit]),
+      low: shown(r['low_' + unit]), other: shown(r['other_' + unit]), images: fmtInt(r.unindexed_images), groups: fmtInt(r.unindexed_groups),
+      plan: fmtInt(r.plan_groups)}),
+  });
+});
+
+dash.draw('planftt', (el) => {
+  const d = dash.data('plan_languages'), counted = dash.data('language_counts');
+  const rows = d.status === 'ok' && d.data && counted.status === 'ok' && counted.data && counted.data.length ? d.data : [];
+  const colors = dash.colors || [];
+  drawLanguageBars(el, rows, {
+    total: 'no_full_text',
+    segments: [{field: 'mid_tier_no_full_text', fill: colors[0] || 'currentColor'}, {field: 'top_tier_no_full_text', fill: colors[1] || 'currentColor'}],
+    tipTpl: 'template.acm-tip-vol-tpl',
+    tip: (r) => ({language: r.language, mid: fmtInt(r.mid_tier_no_full_text), top: fmtInt(r.top_tier_no_full_text)}),
+  });
+});
+
+dash.draw('planrows', (tbody) => {
+  const d = dash.data('plan_rows');
+  if (d.status !== 'ok' || !d.data) { tbody.replaceChildren(); return; }
+  const cell = (text, cls) => {
+    const td = document.createElement('td');
+    if (cls) td.className = cls;
+    td.textContent = text == null ? '' : String(text);
+    return td;
+  };
+  const out = d.data.map((r) => {
+    const tr = document.createElement('tr');
+    tr.setAttribute('data-key', enc(r.id));
+    const band = document.createElement('td'), chip = document.createElement('span');
+    chip.className = 'acm-chip';
+    chip.textContent = r.priority_band == null ? '' : String(r.priority_band);
+    band.appendChild(chip);
+    const num = (v) => (v == null ? '' : fmtInt(v));
+    tr.append(cell(r.language, 'acm-nw'), cell(r.country, 'acm-nw'), cell(r.record_type), band, cell(num(r.plan_groups), 'acm-num'),
+      cell(num(r.unindexed_groups), 'acm-num'), cell(r.counted_pct == null ? '' : r.counted_pct + '%', 'acm-num'), cell(num(r.unindexed_images), 'acm-num'),
+      cell(r.notes, 'acm-note'));
+    return tr;
+  });
+  if (!out.length) {
+    const none = cloneTpl('template.acm-plan-none-tpl');
+    if (none) {
+      const tr = document.createElement('tr'), td = document.createElement('td');
+      td.setAttribute('colspan', '9');
+      td.appendChild(none);
+      tr.appendChild(td);
+      out.push(tr);
+    }
+  }
+  tbody.replaceChildren(...out);
+});
+
+if (typeof location !== 'undefined' && location.hash === '#acm-2027') dash.setParams({page: 'y2027'});
+
+</script>
+
+</div>
+<p class="local-foot">Local copy of the ACE capability matrix. Its numbers come from the files in the <code>data</code> folder; README.md says how to replace them. Reload this page after changing a file.</p>
+</div>
+<script>dash.start();</script>
+</body>
+</html>
