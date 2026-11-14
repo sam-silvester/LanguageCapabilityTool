@@ -1,0 +1,16 @@
+# Your capability data stays on your machine, not in the repository.
+data/
+*.db
+*.db-journal
+
+# Workbooks and exports often hold internal information. Remove these lines only if you mean to commit them.
+*.xlsx
+*.xlsm
+language-capability-*.csv
+language-capability-*.json
+
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store

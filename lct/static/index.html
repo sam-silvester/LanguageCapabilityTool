@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Language Capability Tool</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="lct-top">
+  <div class="lct-brand">Language Capability Tool</div>
+  <nav class="lct-tabs" aria-label="Views">
+    <button type="button" class="lct-tab-b" data-view="heatmap" aria-current="page">Heatmap</button>
+    <button type="button" class="lct-tab-b" data-view="table">Table</button>
+    <button type="button" class="lct-tab-b" data-view="languages">Languages</button>
+    <button type="button" class="lct-tab-b" data-view="history">History</button>
+    <button type="button" class="lct-tab-b" data-view="settings">Settings</button>
+  </nav>
+  <div class="lct-top-actions">
+    <label class="lct-who">Editing as <input id="who" class="lct-input" type="text" placeholder="your name" autocomplete="name"></label>
+    <button type="button" class="lct-btn" id="btn-refresh">Refresh</button>
+    <button type="button" class="lct-btn" id="btn-import">Import</button>
+    <details class="lct-menu" id="export-menu">
+      <summary class="lct-btn">Export</summary>
+      <div class="lct-menu-list">
+        <a href="/api/export?format=xlsx" download>Excel workbook (.xlsx)</a>
+        <a href="/api/export?format=csv" download>Capability rows (.csv)</a>
+        <a href="/api/export?format=csv&amp;sheet=languages" download>Languages (.csv)</a>
+        <a href="/api/export?format=json" download>Everything (.json)</a>
+      </div>
+    </details>
+  </div>
+</header>
+<div class="lct-banner" id="banner" hidden>
+  <span>You’re looking at sample data. Import your own workbook and choose “Replace” to clear it.</span>
+  <button type="button" class="lct-btn" id="banner-import">Import a workbook</button>
+</div>
+
+<!-- ================= Heatmap ================= -->
+<main class="lct-view" id="view-heatmap">
+  <header class="lct-sec">
+    <h1 class="lct-title" id="data-name">Language capability</h1>
+    <p class="lct-lede">Rows in view: <b class="lct-n" id="sum-rows">—</b>. Full text is in production for <b class="lct-n" id="sum-ft">—</b> of them, and an index path is in production or maintenance for <b class="lct-n" id="sum-ix">—</b>. A gap in full text or index is recorded for <b class="lct-n" id="sum-gap">—</b>.</p>
+    <div class="lct-controls">
+      <select class="lct-select" id="f-tier" aria-label="Tier"></select>
+      <select class="lct-select" id="f-script" aria-label="Script"></select>
+    </div>
+  </header>
+
+  <section class="lct-sec">
+    <h2 class="lct-h2">Where capability stands</h2>
+    <div class="lct-bars">
+      <span class="lct-barlab">Full text</span>
+      <div class="lct-chart lct-bar" id="bar-ft" role="img" aria-label="Rows by full-text status">—</div>
+      <span class="lct-barlab">Index</span>
+      <div class="lct-chart lct-bar" id="bar-ix" role="img" aria-label="Rows by index status">—</div>
+    </div>
+    <ul class="lct-legend" id="legend"></ul>
+  </section>
+
+  <section class="lct-sec" id="sec-matrix">
+    <h2 class="lct-h2">Language by content type</h2>
+    <p class="lct-cap">Each cell shows the most advanced status among the rows for that language and content type. Select a cell, a language or a content type to see and edit its rows, or switch on Paint to set statuses by clicking cells.</p>
+    <div class="lct-controls">
+      <div class="lct-seg" role="group" aria-label="Status shown in each cell">
+        <button type="button" class="lct-seg-b" data-cellview="both" aria-pressed="true">Both</button>
+        <button type="button" class="lct-seg-b" data-cellview="ft" aria-pressed="false">Full text</button>
+        <button type="button" class="lct-seg-b" data-cellview="ix" aria-pressed="false">Index</button>
+      </div>
+      <span class="lct-key lct-cap"><span class="lct-split" aria-hidden="true"><i class="lct-split-l"></i><i class="lct-split-r"></i></span>In Both, the left half is full text and the right half is index.</span>
+    </div>
+    <div class="lct-paintbar">
+      <button type="button" class="lct-btn" id="paint-toggle" aria-pressed="false">Paint statuses</button>
+      <div class="lct-paint-tools" id="paint-tools" hidden>
+        <div class="lct-seg" role="group" aria-label="Side to paint">
+          <button type="button" class="lct-seg-b" data-side="ft" aria-pressed="true">Full text</button>
+          <button type="button" class="lct-seg-b" data-side="ix" aria-pressed="false">Index</button>
+        </div>
+        <div class="lct-palette" id="paint-palette" role="group" aria-label="Status to paint"></div>
+        <span class="lct-cap" id="paint-label"></span>
+      </div>
+    </div>
+    <div class="lct-explore">
+      <div class="lct-chart lct-matrix" id="matrix" role="group" aria-label="Capability status by language and content type">—</div>
+      <aside class="lct-panel" id="panel">
+        <h3 class="lct-h3">Rows behind the selection</h3>
+        <p class="lct-cap" id="panel-hint">Nothing selected yet. Select a cell, a language name or a content type heading. An empty cell lets you add its first row.</p>
+        <div class="lct-detail-wrap" id="panel-wrap" hidden>
+          <div class="lct-seltitle" id="panel-title"></div>
+          <div class="lct-detail-bar">
+            <span class="lct-selcount" id="panel-count"></span>
+            <button type="button" class="lct-btn" id="panel-add">Add a row</button>
+            <button type="button" class="lct-btn" id="panel-clear">Clear selection</button>
+            <button type="button" class="lct-btn lct-back" id="panel-back">Back to matrix</button>
+          </div>
+          <div class="lct-detail" id="panel-body"></div>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <section class="lct-sec">
+    <h2 class="lct-h2">Unindexed images by language</h2>
+    <p class="lct-cap">Mid-tier and top-tier counts from the Languages tab. Languages without a count are left out. Select a bar to see that language’s rows.</p>
+    <div class="lct-legend">
+      <span class="lct-key"><i class="lct-sw lct-sw-mid"></i>Mid-tier</span>
+      <span class="lct-key"><i class="lct-sw lct-sw-top"></i>Top-tier</span>
+    </div>
+    <div class="lct-chart" id="backlog" role="img" aria-label="Unindexed mid-tier and top-tier images by language">—</div>
+  </section>
+</main>
+
+<!-- ================= Table ================= -->
+<main class="lct-view" id="view-table" hidden>
+  <div class="lct-head">
+    <h1 class="lct-title">Capability rows</h1>
+    <button type="button" class="lct-btn lct-btn-primary" id="table-add">Add a row</button>
+  </div>
+  <p class="lct-cap">Click a cell to edit it. Enter saves, Esc cancels. For bulk edits, export to Excel, edit there and import the file back.</p>
+  <div class="lct-toolbar" id="table-tools"></div>
+  <div class="lct-gridwrap" id="table-grid"></div>
+</main>
+
+<!-- ================= Languages ================= -->
+<main class="lct-view" id="view-languages" hidden>
+  <div class="lct-head">
+    <h1 class="lct-title">Languages</h1>
+    <button type="button" class="lct-btn lct-btn-primary" id="lang-add">Add a language</button>
+  </div>
+  <p class="lct-cap">One row per language: script, quality marks and volumes. Renaming a language here renames it on every capability row.</p>
+  <div class="lct-toolbar" id="lang-tools"></div>
+  <div class="lct-gridwrap" id="lang-grid"></div>
+</main>
+
+<!-- ================= History ================= -->
+<main class="lct-view" id="view-history" hidden>
+  <h1 class="lct-title">History</h1>
+  <section class="lct-sec">
+    <h2 class="lct-h2">Progress by day</h2>
+    <p class="lct-cap">Rows in production and rows with a recorded gap, saved once a day whenever something changes.</p>
+    <div class="lct-legend" id="progress-legend"></div>
+    <div class="lct-chart" id="progress" role="img" aria-label="Rows in production and gaps by day">—</div>
+  </section>
+  <section class="lct-sec">
+    <h2 class="lct-h2">Changes</h2>
+    <p class="lct-cap">Every edit, paint stroke and import, newest first. Revert undoes everything in one entry.</p>
+    <div class="lct-detail" id="changes"></div>
+    <div><button type="button" class="lct-btn" id="changes-more" hidden>Show older changes</button></div>
+  </section>
+</main>
+
+<!-- ================= Settings ================= -->
+<main class="lct-view" id="view-settings" hidden>
+  <h1 class="lct-title">Settings</h1>
+  <section class="lct-sec">
+    <h2 class="lct-h2">Dataset</h2>
+    <div class="lct-toolbar">
+      <label class="lct-field">Name shown on the heatmap <input class="lct-input" id="set-name" type="text"></label>
+      <label class="lct-field">Prefix for new row IDs <input class="lct-input" id="set-prefix" type="text"></label>
+      <button type="button" class="lct-btn lct-btn-primary" id="set-save">Save dataset settings</button>
+    </div>
+  </section>
+  <section class="lct-sec">
+    <h2 class="lct-h2">Dropdown lists</h2>
+    <p class="lct-cap">One value per line. Add a description after a vertical bar, like “Top-tier | Records normally indexed”. The order of the Status list is the ranking the heatmap uses, least advanced first; its first ten positions have colours. Renaming a value here doesn’t rename it on existing rows.</p>
+    <div class="lct-cards" id="lists"></div>
+  </section>
+</main>
+
+<!-- ================= Dialogs ================= -->
+<dialog class="lct-dialog" id="dlg-edit">
+  <form class="lct-dialog-in" method="dialog" id="edit-form">
+    <div class="lct-dialog-h"><h2 class="lct-h2" id="edit-title">Edit</h2></div>
+    <div class="lct-dialog-b" id="edit-body"></div>
+    <div class="lct-dialog-f">
+      <span class="lct-error" id="edit-error" role="alert"></span>
+      <button type="button" class="lct-btn" id="edit-cancel">Cancel</button>
+      <button type="submit" class="lct-btn lct-btn-primary" id="edit-save">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog class="lct-dialog" id="dlg-import">
+  <div class="lct-dialog-in">
+    <div class="lct-dialog-h"><h2 class="lct-h2">Import a spreadsheet</h2></div>
+    <div class="lct-dialog-b">
+      <label class="lct-field">File (.xlsx, .csv or .json) <input class="lct-input" id="imp-file" type="file" accept=".xlsx,.xlsm,.csv,.json"></label>
+      <label class="lct-field" id="imp-sheet-wrap" hidden>This CSV holds
+        <select class="lct-select" id="imp-sheet"><option value="capabilities">Capability rows</option><option value="languages">Languages</option></select>
+      </label>
+      <div class="lct-sec">
+        <label class="lct-radio"><input type="radio" name="imp-strategy" value="merge" checked> <span><b>Merge.</b> Update rows whose ID matches and add the new ones. Rows that aren’t in the file stay as they are.</span></label>
+        <label class="lct-radio"><input type="radio" name="imp-strategy" value="replace"> <span><b>Replace.</b> Make the tool match the file: rows that aren’t in the file are deleted.</span></label>
+      </div>
+      <p class="lct-cap">In an Excel file the tool reads the sheets named Matrix, Languages and Lists. Rows are matched by ID, a new column becomes a new field, and nothing is saved until you apply.</p>
+      <div class="lct-report" id="imp-report"></div>
+    </div>
+    <div class="lct-dialog-f">
+      <span class="lct-error" id="imp-error" role="alert"></span>
+      <button type="button" class="lct-btn" id="imp-cancel">Cancel</button>
+      <button type="button" class="lct-btn" id="imp-preview">Preview changes</button>
+      <button type="button" class="lct-btn lct-btn-primary" id="imp-apply" disabled>Apply import</button>
+    </div>
+  </div>
+</dialog>
+
+<div class="lct-toast" id="toast" role="status" hidden>
+  <span id="toast-text"></span>
+  <button type="button" class="lct-btn" id="toast-undo" hidden>Undo</button>
+  <button type="button" class="lct-btn lct-btn-quiet" id="toast-close" aria-label="Dismiss">Close</button>
+</div>
+
+<script src="vendor/d3.min.js"></script>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

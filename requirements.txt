@@ -1,0 +1,2 @@
+# Only needed for Excel (.xlsx) import and export. CSV and JSON work without it.
+openpyxl>=3.1
