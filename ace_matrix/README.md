@@ -4,7 +4,8 @@ A copy of the hosted ACE capability matrix as it stood on 14 November 2026. It h
 
 - **Capability today**: the language by content type matrix and unindexed images by language.
 - **2027 priorities**: the index workstream (content to key, from the 2027 list and the Databricks
-  country counts) and the full text transcription (FTT) workstream.
+  country counts), the full text transcription (FTT) workstream, and the engineering source lists
+  set against the 2027 list.
 
 It runs in a browser from this folder. Python 3 serves the files; nothing needs installing.
 
@@ -29,6 +30,7 @@ The server does not need restarting.
 |---|---|---|
 | `data/image_counts.csv` | Images by language, tier, indexed status, full-text status and PIPA | Run `sql/ace_matrix_feed.sql` in Databricks and download the result as CSV |
 | `data/country_counts_2027.csv` | Groups and images for each row of the 2027 list | Run the country query in Databricks and download the result as CSV |
+| `data/source_lists_2027.csv` | Groups and images on each engineering source list: all, unindexed, ACE-indexed, human-indexed | `python3 tools/read_source_list_summaries.py "/path/to/2027 Source Lists"`, or type the numbers in |
 | `data/priorities_2027.json` | The 2027 list: country, record type, groups, priority band, notes | `python3 tools/convert_workbook.py path/to/workbook.xlsx` (needs `pip install openpyxl`) |
 | `data/country_languages.json` | The language each country is counted under | Edit by hand |
 | `data/capabilities.json` | Matrix rows: statuses, engines, evidence, estimated images | Edit by hand |
@@ -40,13 +42,36 @@ If the list changes, rerun the country query too.
 If a file is missing or has the wrong columns, a message at the top of the page names it and the
 charts that depend on it show a dash.
 
+## Fill in the engineering source lists
+
+`data/source_lists_2027.csv` has one row for each source list engineering pulled. Each
+`<name>-by-indexing-status.xlsx` workbook has a small `summary` tab with groups and images for all,
+unindexed, ace-indexed and human-indexed. Five summaries are filled in. The other workbooks were too
+large to read from the hosted app's side.
+
+To fill in the rest, download or sync the "2027 Source Lists" folder, then run:
+
+```
+cd ~/Projects/LanguageCapabilityTool/ace_matrix
+python3 tools/read_source_list_summaries.py "/path/to/2027 Source Lists"
+```
+
+It reads only the `summary` tab of each workbook and needs nothing installed. You can also open
+`data/source_lists_2027.csv` in Excel and type the eight numbers into a row. Leave a row's counts
+blank while its summary is unknown. `plan_rows` lists the rows of the 2027 list a source list
+covers, separated by spaces.
+
+`italy-ftt` has one sheet and no summary tab, so only its group count is filled in.
+
 ## Check it after an update
 
 1. Open **2027 priorities**. The headline numbers are the sums of `unindexed_images`,
    `unindexed_groups` and `plan_natural_groups` in `data/country_counts_2027.csv`.
 2. "For 41 of them" should match the number of rows on the list. A lower number means some rows of
    the counts file no longer match the list.
-3. Open **Capability today**. The date under "Unindexed images by language" is the `run_date` in
+3. Under "Engineering source lists against the 2027 list", the first sentence says how many
+   summaries are filled in, and each row's numbers match its workbook's `summary` tab.
+4. Open **Capability today**. The date under "Unindexed images by language" is the `run_date` in
    `data/image_counts.csv`.
 
 With the files in this folder the headline reads 417,264,816 unindexed images in 3,786,180 natural
@@ -58,7 +83,7 @@ groups, against 3,991,395 groups on the list.
 cd ~/Projects/LanguageCapabilityTool
 git add ace_matrix
 git commit -m "Update ACE matrix data"
-git push
+git push origin HEAD:main
 ```
 
 The data files hold internal counts and the notes from the 2027 list. Keep the repository private.
@@ -66,9 +91,10 @@ The data files hold internal counts and the notes from the 2027 list. Keep the r
 ## What is in this folder
 
 - `index.html`: the page and a small script that loads the data files.
-- `data/`: the six data files above.
+- `data/`: the seven data files above.
 - `sql/`: the Databricks queries behind `image_counts.csv`, and the General Query with a settings block.
 - `tools/convert_workbook.py`: turns the 2027 workbook into `data/priorities_2027.json`.
+- `tools/read_source_list_summaries.py`: fills `data/source_lists_2027.csv` from the source list workbooks.
 - `vendor/d3.min.js`: the D3 charting library, version 7.9.0, under the ISC licence in `vendor/D3-LICENSE.txt`.
 
 This copy and the hosted matrix are separate. A change made in one does not reach the other.

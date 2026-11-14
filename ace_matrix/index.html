@@ -45,6 +45,7 @@ window.dash = (function () {
     priorities_2027: {file: 'data/priorities_2027.json', format: 'json'},
     country_languages: {file: 'data/country_languages.json', format: 'json'},
     country_counts_2027: {file: 'data/country_counts_2027.csv', format: 'csv'},
+    source_lists_2027: {file: 'data/source_lists_2027.csv', format: 'csv'},
   };
   const DEFAULTS = {ctype: '', lang: '', script: '', tier: '', view: 'both', scope: 'noft', page: 'now', band: '', plang: '', pmeasure: 'images'};
   const loaders = {}, calcs = {}, draws = {}, listeners = [], store = {};
@@ -233,6 +234,11 @@ window.dash = (function () {
 .acm-table th{color:var(--color-fg-muted);font-weight:500;white-space:nowrap}
 .acm-table .acm-num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .acm-table .acm-nw{white-space:nowrap}
+.acm-table th.acm-wrap{white-space:normal;min-width:92px}
+.acm-tri{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.acm-tri-in{background-color:var(--acm-s9)}
+.acm-tri-off{background-color:var(--acm-s5)}
+.acm-tri-none{background-color:var(--acm-s3)}
 .acm-table .acm-note{min-width:220px;color:var(--color-fg-muted)}
 .acm-notes{border-top:1px solid var(--color-border-line);padding-top:var(--cds-pad-sm,8px)}
 .acm-sum{cursor:pointer;font-weight:500}
@@ -375,6 +381,29 @@ window.dash = (function () {
       <span class="acm-key"><i class="acm-sw acm-c1"></i>Top-tier</span>
     </div>
     <div class="acm-chart" data-draw="planftt" data-source="plan_languages language_counts" role="group" aria-label="Images not yet in full text for the 2027 languages">—</div>
+  </section>
+
+  <section class="acm-sec" id="acm-2027-lists">
+    <h2 class="acm-h2">Engineering source lists against the 2027 list</h2>
+    <p class="acm-lede" id="acm-2027-lists-lede">A summary has been read for <b class="acm-n" data-draw="listsum" data-source="source_list_summary" data-field="read_lists" data-row="0">—</b> of the <b class="acm-n" data-draw="listsum" data-source="source_list_summary" data-field="lists" data-row="0">—</b> source lists. Lists in line with the 2027 list: <b class="acm-n" data-draw="listsum" data-source="source_list_summary" data-field="in_line" data-row="0">—</b>. Lists with fewer unindexed groups than it: <b class="acm-n" data-draw="listsum" data-source="source_list_summary" data-field="fewer" data-row="0">—</b>. Lists with more: <b class="acm-n" data-draw="listsum" data-source="source_list_summary" data-field="more" data-row="0">—</b>.</p>
+    <p class="acm-cap">Engineering pulled a list of groups for each country and record family and split it into unindexed, ACE-indexed and human-indexed. In line means the unindexed groups on the source list are within 20% of the groups on the 2027 list. A source list counts each group once, while the 2027 list and the country query count a group under every record type it holds, so a source list can be smaller for that reason alone. The charts above still use the country query.</p>
+    <div class="acm-twrap">
+      <table class="acm-table" data-source="source_list_triage" data-row-key="source_list">
+        <thead><tr>
+          <th data-field="source_list">Source list</th>
+          <th data-field="country">Country</th>
+          <th data-field="priority_band">Priority band</th>
+          <th class="acm-num acm-wrap" data-field="plan_groups">Groups on 2027 list</th>
+          <th class="acm-num acm-wrap" data-field="query_unindexed_groups">Unindexed groups, country query</th>
+          <th class="acm-num acm-wrap" data-field="list_unindexed_groups">Unindexed groups, source list</th>
+          <th class="acm-num acm-wrap" data-field="list_unindexed_images">Unindexed images, source list</th>
+          <th class="acm-num acm-wrap" data-field="list_indexed_groups">Already indexed groups, source list</th>
+          <th data-field="triage">Triage</th>
+          <th data-field="note">Note</th>
+        </tr></thead>
+        <tbody data-draw="listrows"></tbody>
+      </table>
+    </div>
   </section>
 
   <section class="acm-sec" id="acm-2027-rows">
@@ -721,6 +750,118 @@ dash.loader('country_counts_2027', {
       header.forEach((name, j) => { row[name] = cells[j] == null ? '' : cells[j]; });
       return typed(row);
     });
+  },
+});
+
+dash.loader('source_lists_2027', {
+  description: 'Reads the source list summaries as a CSV, where a quoted field may hold commas. Count columns become numbers, and a blank count stays empty to mean the summary has not been read.',
+  fn: ({answer}) => {
+    const counts = ['all_groups', 'all_images', 'unindexed_groups', 'unindexed_images', 'ace_indexed_groups', 'ace_indexed_images',
+      'human_indexed_groups', 'human_indexed_images'];
+    const typed = (row) => {
+      const out = Object.assign({}, row);
+      counts.forEach((name) => {
+        const v = row[name];
+        out[name] = v == null || String(v).trim() === '' || !Number.isFinite(Number(v)) ? null : Number(v);
+      });
+      return out;
+    };
+    if (Array.isArray(answer)) return answer.map(typed);
+    if (answer && Array.isArray(answer.rows)) return answer.rows.map(typed);
+    const text = String(answer == null ? '' : answer).replace(/^\uFEFF/, '');
+    const records = [];
+    let record = [], cell = '', quoted = false;
+    for (let i = 0; i < text.length; i += 1) {
+      const ch = text[i];
+      if (quoted) {
+        if (ch !== '"') cell += ch;
+        else if (text[i + 1] === '"') { cell += '"'; i += 1; }
+        else quoted = false;
+      } else if (ch === '"') {
+        quoted = true;
+      } else if (ch === ',') {
+        record.push(cell); cell = '';
+      } else if (ch === '\n' || ch === '\r') {
+        if (ch === '\r' && text[i + 1] === '\n') i += 1;
+        record.push(cell); cell = '';
+        if (record.length > 1 || record[0] !== '') records.push(record);
+        record = [];
+      } else {
+        cell += ch;
+      }
+    }
+    if (cell !== '' || record.length) { record.push(cell); records.push(record); }
+    const header = records.shift() || [];
+    const missing = ['source_list', 'plan_rows', 'unindexed_groups', 'unindexed_images'].filter((name) => header.indexOf(name) < 0);
+    if (missing.length) {
+      throw new Error('This file is not the source list summaries: it has no column named ' + missing.join(', ') + '.');
+    }
+    return records.map((cells) => {
+      const row = {};
+      header.forEach((name, j) => { row[name] = cells[j] == null ? '' : cells[j]; });
+      return typed(row);
+    });
+  },
+});
+
+dash.calc('source_list_triage', {
+  title: 'Engineering source lists against the 2027 list',
+  description: 'One row for each engineering source list. Groups on the 2027 list and the country query counts are summed over the list rows that the source list covers. Already indexed is ACE-indexed plus human-indexed groups. Triage compares unindexed groups on the source list with groups on the 2027 list: in line when within 20%, otherwise fewer or more.',
+  inputs: ['source_lists_2027', 'priorities_2027', 'country_counts_2027'],
+  fn: (sourceLists, priorities, countryCounts) => {
+    const planOf = new Map(priorities.map((row) => [String(row.order), row]));
+    const countsOf = new Map(countryCounts.map((row) => [String(row.plan_row), row]));
+    return sourceLists.map((list) => {
+      const rows = String(list.plan_rows == null ? '' : list.plan_rows).split(/[\s;,]+/).filter(Boolean)
+        .map((n) => planOf.get(n)).filter(Boolean);
+      const bands = Array.from(new Set(rows.map((row) => row.priority_band)));
+      let planGroups = 0, queryGroups = 0, queryImages = 0, counted = 0;
+      for (const row of rows) {
+        planGroups += Number(row.natural_groups) || 0;
+        const found = countsOf.get(String(row.order));
+        if (!found || found.country !== row.country || found.record_type !== row.record_type) continue;
+        counted += 1;
+        queryGroups += Number(found.unindexed_groups) || 0;
+        queryImages += Number(found.unindexed_images) || 0;
+      }
+      const read = list.unindexed_groups != null;
+      let triage = 'Summary not read', code = 'none';
+      if (!rows.length) { triage = 'Not on the 2027 list'; }
+      else if (read && planGroups > 0) {
+        const share = list.unindexed_groups / planGroups;
+        if (share < 0.8) { triage = 'Fewer unindexed groups than the list'; code = 'off'; }
+        else if (share > 1.2) { triage = 'More unindexed groups than the list'; code = 'off'; }
+        else { triage = 'In line with the list'; code = 'in'; }
+      }
+      return {
+        source_list: list.source_list, workstream: list.workstream, country: list.country, record_sets: rows.length,
+        priority_band: bands.length === 1 ? bands[0] : (bands.length ? 'Mixed' : ''),
+        plan_groups: rows.length ? planGroups : null,
+        query_unindexed_groups: counted ? queryGroups : null, query_unindexed_images: counted ? queryImages : null,
+        list_all_groups: list.all_groups, list_all_images: list.all_images,
+        list_unindexed_groups: list.unindexed_groups, list_unindexed_images: list.unindexed_images,
+        list_indexed_groups: read ? (list.ace_indexed_groups || 0) + (list.human_indexed_groups || 0) : null,
+        list_indexed_images: read ? (list.ace_indexed_images || 0) + (list.human_indexed_images || 0) : null,
+        triage: triage, triage_code: code, note: list.note,
+      };
+    });
+  },
+});
+
+dash.calc('source_list_summary', {
+  title: 'Source list triage totals',
+  description: 'How many source lists there are, how many have a summary read, and how many of those are in line with the 2027 list or hold fewer or more unindexed groups than it.',
+  inputs: ['source_list_triage'],
+  fn: (triage) => {
+    const out = {lists: 0, read_lists: 0, in_line: 0, fewer: 0, more: 0};
+    for (const row of triage || []) {
+      out.lists += 1;
+      if (row.list_unindexed_groups != null) out.read_lists += 1;
+      if (row.triage === 'In line with the list') out.in_line += 1;
+      else if (row.triage === 'Fewer unindexed groups than the list') out.fewer += 1;
+      else if (row.triage === 'More unindexed groups than the list') out.more += 1;
+    }
+    return [out];
   },
 });
 
@@ -1253,6 +1394,44 @@ dash.draw('planrows', (tbody) => {
     }
   }
   tbody.replaceChildren(...out);
+});
+
+dash.draw('listsum', (el) => {
+  const s = dash.data('source_list_summary');
+  const row = s.status === 'ok' && s.data && s.data[0];
+  el.textContent = row && row[el.dataset.field] != null ? fmtInt(row[el.dataset.field]) : '—';
+});
+
+dash.draw('listrows', (tbody) => {
+  const d = dash.data('source_list_triage');
+  if (d.status !== 'ok' || !d.data) { tbody.replaceChildren(); return; }
+  const cell = (text, cls) => {
+    const td = document.createElement('td');
+    if (cls) td.className = cls;
+    td.textContent = text == null ? '' : String(text);
+    return td;
+  };
+  const num = (v) => (v == null ? '' : fmtInt(v));
+  tbody.replaceChildren(...d.data.map((r) => {
+    const tr = document.createElement('tr');
+    tr.setAttribute('data-key', enc(r.source_list));
+    const band = document.createElement('td');
+    if (r.priority_band) {
+      const chip = document.createElement('span');
+      chip.className = 'acm-chip';
+      chip.textContent = r.priority_band;
+      band.appendChild(chip);
+    }
+    const triage = document.createElement('td'), wrap = document.createElement('span'), dot = document.createElement('i');
+    wrap.className = 'acm-tri';
+    dot.className = 'acm-sw acm-tri-' + (r.triage_code === 'in' ? 'in' : r.triage_code === 'off' ? 'off' : 'none');
+    wrap.append(dot, document.createTextNode(r.triage == null ? '' : String(r.triage)));
+    triage.appendChild(wrap);
+    tr.append(cell(r.source_list, 'acm-nw'), cell(r.country, 'acm-nw'), band, cell(num(r.plan_groups), 'acm-num'),
+      cell(num(r.query_unindexed_groups), 'acm-num'), cell(num(r.list_unindexed_groups), 'acm-num'),
+      cell(num(r.list_unindexed_images), 'acm-num'), cell(num(r.list_indexed_groups), 'acm-num'), triage, cell(r.note, 'acm-note'));
+    return tr;
+  }));
 });
 
 if (typeof location !== 'undefined' && location.hash === '#acm-2027') dash.setParams({page: 'y2027'});
