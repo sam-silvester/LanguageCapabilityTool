@@ -2,10 +2,12 @@
 
 A copy of the hosted ACE capability matrix as it stood on 14 November 2026. It has two views:
 
-- **Capability today**: the language by content type matrix and unindexed images by language.
-- **2027 priorities**: the index workstream (content to key, from the 2027 list and the Databricks
-  country counts), the full text transcription (FTT) workstream, and the engineering source lists
-  set against the 2027 list.
+- **Capability today**: where capability stands (with rows and languages rolled up by stage), the
+  language by content type matrix and unindexed images by language.
+- **2027 priorities**: a capability heatmap for the countries on the 2027 list, the index workstream
+  (content to key, from the 2027 list and the Databricks country counts) and the full text
+  transcription (FTT) workstream, each with totals, the cost of the 2027 content processing plan,
+  and the engineering source lists set against the 2027 list.
 
 It runs in a browser from this folder. Python 3 serves the files; nothing needs installing.
 
@@ -33,6 +35,9 @@ The server does not need restarting.
 | `data/source_lists_2027.csv` | Groups and images on each engineering source list: all, unindexed, ACE-indexed, human-indexed | `python3 tools/read_source_list_summaries.py "/path/to/2027 Source Lists"`, or type the numbers in |
 | `data/priorities_2027.json` | The 2027 list: country, record type, groups, priority band, notes | `python3 tools/convert_workbook.py path/to/workbook.xlsx` (needs `pip install openpyxl`) |
 | `data/country_languages.json` | The language each country is counted under | Edit by hand |
+| `data/record_type_content_types.json` | The content type each 2027 record type is shown under in the heatmap | Edit by hand |
+| `data/cost_plan_2027.json` | Cost of each collection by phase, copied from the 2027 Content Processing Plan slide | Edit by hand when the slide changes |
+| `data/cost_quarters_2027.json` | The slide's cost by quarter, the 2027 total and the optional amount | Edit by hand when the slide changes |
 | `data/capabilities.json` | Matrix rows: statuses, engines, evidence, estimated images | Edit by hand |
 | `data/languages.json` | Language baseline: models, quality gate, word accuracy | Edit by hand |
 
@@ -41,6 +46,13 @@ If the list changes, rerun the country query too.
 
 If a file is missing or has the wrong columns, a message at the top of the page names it and the
 charts that depend on it show a dash.
+
+## Costs
+
+The cost section shows the slide's figures as they stand. In `data/cost_plan_2027.json` each figure
+appears twice: as text exactly as on the slide (`phase1`, `total`, and so on), which the table and
+the headline show, and as a number in millions (`phase1_musd`, `total_musd`), which sizes the bars.
+Change both when a figure changes. Nothing in this section is worked out from the image counts.
 
 ## Fill in the engineering source lists
 
@@ -91,7 +103,7 @@ The data files hold internal counts and the notes from the 2027 list. Keep the r
 ## What is in this folder
 
 - `index.html`: the page and a small script that loads the data files.
-- `data/`: the seven data files above.
+- `data/`: the ten data files above.
 - `sql/`: the Databricks queries behind `image_counts.csv`, and the General Query with a settings block.
 - `tools/convert_workbook.py`: turns the 2027 workbook into `data/priorities_2027.json`.
 - `tools/read_source_list_summaries.py`: fills `data/source_lists_2027.csv` from the source list workbooks.
