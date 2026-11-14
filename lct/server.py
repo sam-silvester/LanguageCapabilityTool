@@ -117,7 +117,8 @@ def make_handler(store: Store, verbose: bool = False):
             if route == ("GET", "state", 1):
                 return self._json(store.state())
             if route == ("GET", "changes", 1):
-                return self._json({"changes": store.changes(min(int(q.get("limit", 300)), 2000), int(q.get("before", 0)))})
+                return self._json({"changes": store.changes(min(int(q.get("limit", 300)), 2000), int(q.get("before", 0)),
+                                                            q.get("entity", ""), q.get("entity_id", ""))})
             if route == ("GET", "snapshots", 1):
                 return self._json({"snapshots": store.snapshots()})
             if route == ("GET", "export", 1):

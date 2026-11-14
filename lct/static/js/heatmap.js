@@ -1,8 +1,10 @@
 // The heatmap view: summary, status bars, the language-by-content-type matrix, paint mode,
 // the panel of rows behind a selection, and the backlog chart.
 import {$, $$, el, app, api, mutate, refresh, fmtInt, fmtShort, plural, idPath, fields, listNames, statuses, rankOf, swatch,
-  onSwatch, contentTypes, coverage, statusCounts, summary, backlog, selectedRows, makeTip} from './core.js';
+  onSwatch, contentTypes, coverage, statusCounts, summary, backlog, selectedRows, makeTip, setSlice, toggleSlice, langInView,
+  statusPick} from './core.js';
 import {openEditor} from './editor.js';
+import {openRow, openLanguage} from './drawer.js';
 
 const dash = (box) => box.replaceChildren(document.createTextNode('—'));
 const smooth = () => (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth');
@@ -23,9 +25,12 @@ const onKey = (fn) => (event, d) => {
 
 // ---- header: summary, filters, bars, legend ------------------------------------------------------
 function fillSelect(sel, first, values, key) {
+  // A quick way into the shared filters: one value here, several from the Explore page.
+  const current = app.slice[key] || [];
   sel.replaceChildren(new Option(first, ''), ...values.map((v) => new Option(v)));
-  sel.value = app.filters[key];
-  sel.onchange = () => { app.filters[key] = sel.value; refresh(); };
+  if (current.length > 1) sel.append(new Option(current.length + ' selected', '__many'));
+  sel.value = current.length > 1 ? '__many' : (current[0] || '');
+  sel.onchange = () => { if (sel.value !== '__many') setSlice(key, sel.value ? [sel.value] : []); };
 }
 
 function drawHeader() {
@@ -59,8 +64,10 @@ function drawBar(box, field) {
     .style('fill', (s) => swatch(s.r.rank))
     .on('pointerenter pointermove', (event, s) => tip.show(event, [
       el('div', {class: 'lct-tip-r'}, el('i', {class: 'lct-sw', style: 'background-color:' + swatch(s.r.rank)}), el('span', {class: 'lct-tip-h', text: s.r.status})),
-      el('div', {class: 'lct-tip-f', text: plural(s.r[field], 'row')})]))
-    .on('pointerleave', () => tip.hide());
+      el('div', {class: 'lct-tip-f', text: plural(s.r[field], 'row') + (s.r.rank ? '. Select to filter every page.' : '')})]))
+    .on('pointerleave', () => tip.hide())
+    .on('click', (event, s) => { if (s.r.rank) toggleSlice(field + '_status', s.r.status); })
+    .attr('class', 'lct-barseg');
   g.filter((s) => s.w >= 22).append('text').attr('class', 'lct-seg-t').style('fill', (s) => onSwatch(s.r.rank))
     .attr('x', (s) => (s.w - 1.5) / 2).attr('y', H / 2).attr('dy', '0.35em').attr('text-anchor', 'middle').text((s) => s.r[field]);
 }
@@ -87,11 +94,12 @@ function paintCell(language, contentType) {
 // ---- matrix --------------------------------------------------------------------------------------
 function drawMatrix(box) {
   const types = contentTypes();
-  const langs = app.data.languages.filter((l) => !app.filters.script || l.script === app.filters.script);
-  if (!langs.length) { box.replaceChildren(el('p', {class: 'lct-cap', text: 'No languages yet. Add one on the Languages tab, or import a workbook.'})); return; }
+  const cellOf = coverage();
+  const inUse = new Set(Array.from(cellOf.keys()).map((k) => k.split('|')[0]));
+  const langs = app.data.languages.filter((l) => langInView(l) && (!app.hideEmpty || inUse.has(l.language)));
+  if (!langs.length) { box.replaceChildren(el('p', {class: 'lct-cap', text: 'No languages to show. Clear the filters, or add a language on the Languages tab.'})); return; }
   // With no rows at all there are no columns; paint and "Add a row" need at least the list to click on.
   const cols = types.length ? types : listNames('Content type').slice(0, 12);
-  const cellOf = coverage();
   const W = Math.max(box.clientWidth, 260), narrow = W < 620;
   const rowH = narrow ? 18 : 22, gap = 2, n = cols.length;
   box.replaceChildren();
@@ -182,17 +190,6 @@ const pair = (row, key, entity) => {
 };
 const line = (cls, ...parts) => (parts.some(Boolean) ? el('p', {class: cls}, ...parts) : null);
 
-function statusPick(row, key) {
-  const current = row[key] || '';
-  const names = statuses();
-  const sel = el('select', {class: 'lct-select', 'aria-label': (key === 'ft_status' ? 'Full-text' : 'Index') + ' status of ' + row.id});
-  if (!names.includes(current)) sel.append(new Option(current || 'No status', current));
-  names.forEach((name) => sel.append(new Option(name)));
-  sel.value = current;
-  sel.onchange = () => mutate(() => api.put(idPath('/api/capabilities', row.id), {[key]: sel.value}));
-  return el('span', {class: 'lct-status-pick'}, el('i', {class: 'lct-sw', style: 'background-color:' + swatch(rankOf(current))}), sel);
-}
-
 function entry(row) {
   const shown = new Set(['id', 'language', 'content_type', 'tier', 'record_type', 'ft_status', 'ix_status', 'ft_evidence', 'ix_evidence', ...Object.keys(SHORT)]);
   const extra = fields('capability').filter((f) => !f.core && !shown.has(f.key)).map((f) => pair(row, f.key));
@@ -201,7 +198,8 @@ function entry(row) {
       el('i', {class: 'lct-tab-i', style: 'background-color:' + swatch(rankOf(row.ft_status))}),
       el('i', {class: 'lct-tab-i', style: 'background-color:' + swatch(rankOf(row.ix_status))})),
     el('div', {class: 'lct-entry-b'},
-      el('div', {class: 'lct-entry-top'}, el('span', {class: 'lct-id', text: row.id}), el('span', {class: 'lct-lang', text: row.language}),
+      el('div', {class: 'lct-entry-top'}, el('button', {type: 'button', class: 'lct-linkbtn lct-id', text: row.id, title: 'Open details and history', onclick: () => openRow(row.id)}),
+        el('span', {class: 'lct-lang', text: row.language}),
         el('span', {text: row.content_type || ''}), el('span', {class: 'lct-meta', text: row.tier || ''})),
       row.record_type ? el('p', {class: 'lct-rt', text: row.record_type}) : null,
       el('div', {class: 'lct-pair'},
@@ -221,6 +219,7 @@ function entry(row) {
       line('lct-src', pair(row, 'sources'), pair(row, 'as_of'),
         row._updated_by ? el('span', {}, el('span', {class: 'lct-k2', text: 'Last edit '}), row._updated_by) : null),
       el('div', {class: 'lct-entry-actions'},
+        el('button', {type: 'button', class: 'lct-btn', text: 'Details and history', onclick: () => openRow(row.id)}),
         el('button', {type: 'button', class: 'lct-btn', text: 'Edit all fields', onclick: () => openEditor('capability', row)}),
         el('button', {type: 'button', class: 'lct-btn', text: 'Duplicate', title: 'Copy this row so you can split it',
           onclick: () => { const copy = Object.assign({}, row); delete copy.id; openEditor('capability', null, copy); }}),
@@ -234,6 +233,7 @@ function languageCard(lang) {
     el('div', {class: 'lct-entry-top'}, el('span', {class: 'lct-lang', text: lang.language})),
     line('lct-line', ...parts),
     el('div', {class: 'lct-entry-actions'},
+      el('button', {type: 'button', class: 'lct-btn', text: 'Language details', onclick: () => openLanguage(lang.language)}),
       el('button', {type: 'button', class: 'lct-btn', text: 'Edit language', onclick: () => openEditor('language', lang)}))));
 }
 
@@ -293,6 +293,7 @@ export function initHeatmap() {
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && app.paint.on && !document.querySelector('dialog[open]')) { app.paint.on = false; refresh(); }
   });
+  $('#hide-empty').addEventListener('change', (event) => { app.hideEmpty = event.target.checked; refresh(); });
   $('#panel-clear').addEventListener('click', () => select(null, true));
   $('#panel-back').addEventListener('click', () => $('#sec-matrix').scrollIntoView({behavior: smooth(), block: 'start'}));
   $('#panel-add').addEventListener('click', () => openEditor('capability', null, {language: app.sel.lang, content_type: app.sel.ctype}));
@@ -303,6 +304,7 @@ export function renderHeatmap() {
   drawBar($('#bar-ft'), 'ft');
   drawBar($('#bar-ix'), 'ix');
   $$('[data-cellview]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.cellview === app.cellView)));
+  $('#hide-empty').checked = app.hideEmpty;
   drawPaint();
   drawPanel();            // before the matrix: showing or hiding the panel changes the matrix width
   drawMatrix($('#matrix'));

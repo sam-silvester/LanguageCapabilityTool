@@ -1,10 +1,14 @@
 // Table, Languages, History and Settings views, and the import dialog.
-import {$, $$, el, app, api, mutate, refresh, toast, fmtInt, plural, idPath, fields, listNames, statuses, thresholds, swatch} from './core.js';
+import {$, $$, el, app, api, mutate, refresh, toast, fmtInt, plural, idPath, fields, listNames, statuses, thresholds, swatch, inView,
+  sliceActive} from './core.js';
 import {openEditor, grid, sortRows} from './editor.js';
+import {openRow, openLanguage, changeLine} from './drawer.js';
 
 const matches = (row, q) => !q || Object.entries(row).some(([k, v]) => !k.startsWith('_') && String(v).toLowerCase().includes(q));
 const toggleSort = (sort, key) => { if (sort.key === key) sort.dir = -sort.dir; else { sort.key = key; sort.dir = 1; } };
 const rowButtons = (entity, row, path, key) => [
+  el('button', {type: 'button', class: 'lct-btn lct-btn-quiet', text: 'View', title: 'Details and history',
+    onclick: () => (entity === 'capability' ? openRow(row.id) : openLanguage(row.language))}),
   el('button', {type: 'button', class: 'lct-btn lct-btn-quiet', text: 'Edit', onclick: () => openEditor(entity, row)}),
   el('button', {type: 'button', class: 'lct-btn lct-btn-quiet', text: 'Delete', onclick: () => mutate(() => api.del(idPath(path, key)))})];
 
@@ -29,9 +33,10 @@ export function initTable() {
 
 function drawTable() {
   const all = app.data.capabilities;
-  const rows = sortRows(all.filter((r) => matches(r, tv.q) && FILTERS.every(([key]) => !tv[key] || r[key] === tv[key])), tv.sort, 'capability');
+  const rows = sortRows(all.filter((r) => inView(r) && matches(r, tv.q) && FILTERS.every(([key]) => !tv[key] || r[key] === tv[key])), tv.sort, 'capability');
   const columns = tv.all ? fields('capability') : DEFAULT_COLS.map((k) => fields('capability').find((f) => f.key === k)).filter(Boolean);
-  $('#tv-count').textContent = rows.length === all.length ? plural(all.length, 'row') : rows.length + ' of ' + plural(all.length, 'row');
+  $('#tv-count').textContent = (rows.length === all.length ? plural(all.length, 'row') : rows.length + ' of ' + plural(all.length, 'row'))
+    + (sliceActive() ? ' (the filters shown at the top apply here too)' : '');
   grid($('#table-grid'), {
     entity: 'capability', rows, columns, sort: tv.sort,
     onSort: (key) => { toggleSort(tv.sort, key); drawTable(); },
@@ -84,25 +89,6 @@ export function renderLanguages() {
 const hv = {changes: [], more: false, token: 0};
 const SOURCE = {tool: 'Edited in the tool', paint: 'Painted on the heatmap', import: 'Spreadsheet import', cli: 'Command line',
   undo: 'Reverted', sample: 'Sample data'};
-const META = {name: 'Dataset name', id_prefix: 'ID prefix', sample: 'Sample data'};
-
-function changeLine(ch) {
-  const label = (entity, key) => { const f = (app.data.fields[entity] || []).find((x) => x.key === key); return f ? f.label : key; };
-  const parse = (text) => { try { return JSON.parse(text); } catch (err) { return {}; } };
-  const what = ch.entity === 'language' ? 'Language ' + ch.entity_id : ch.entity_id;
-  if (ch.entity === 'list') return el('li', {text: 'List “' + ch.entity_id + '” ' + (ch.action === 'create' ? 'created' : 'changed')});
-  if (ch.entity === 'meta') {
-    const say = (value) => (ch.entity_id === 'sample' ? (value === '1' ? 'on' : 'off') : (value || 'blank'));
-    return el('li', {}, (META[ch.entity_id] || ch.entity_id) + ': ', el('span', {class: 'lct-old', text: say(ch.old)}), ' → ' + say(ch.new));
-  }
-  if (ch.action === 'create' || ch.action === 'delete') {
-    const row = parse(ch.action === 'create' ? ch.new : ch.old);
-    const about = ch.entity === 'capability' && row.language ? ' (' + row.language + ' / ' + (row.content_type || '') + ')' : '';
-    return el('li', {text: (ch.action === 'create' ? 'Added ' : 'Deleted ') + what + about});
-  }
-  return el('li', {}, what + ' ' + label(ch.entity, ch.field) + ': ', el('span', {class: 'lct-old', text: ch.old || 'blank'}), ' → ' + (ch.new || 'blank'));
-}
-
 function drawChanges() {
   const batches = [];
   const byId = new Map();
@@ -120,9 +106,9 @@ function drawChanges() {
         el('span', {class: 'lct-meta', text: (b.user ? 'by ' + b.user + ', ' : '') + plural(b.items.length, 'change')}),
         b.source === 'sample' ? null : el('button', {type: 'button', class: 'lct-btn', text: 'Revert',
           onclick: () => mutate(() => api.post('/api/undo', {batch: b.batch}))})),
-      el('ul', {class: 'lct-batch-list'}, ...first.map(changeLine)),
+      el('ul', {class: 'lct-batch-list'}, ...first.map((ch) => changeLine(ch, true))),
       rest.length ? el('details', {}, el('summary', {class: 'lct-cap', text: plural(rest.length, 'more change')}),
-        el('ul', {class: 'lct-batch-list'}, ...rest.map(changeLine))) : null);
+        el('ul', {class: 'lct-batch-list'}, ...rest.map((ch) => changeLine(ch, true)))) : null);
   });
   $('#changes').replaceChildren(...(out.length ? out : [el('p', {class: 'lct-cap', text: 'No changes yet.'})]));
   $('#changes-more').hidden = !hv.more;

@@ -14,10 +14,13 @@ You need Python 3.9 or newer. Nothing else is required to start; `openpyxl` adds
 git clone https://github.com/sam-silvester/LanguageCapabilityTool.git
 cd LanguageCapabilityTool
 python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -r requirements.txt    # openpyxl, for .xlsx files
+source .venv/bin/activate
+pip install -r requirements.txt
 python -m lct
 ```
+
+On Windows, activate the environment with `.venv\Scripts\activate` instead. `requirements.txt` installs `openpyxl`,
+which the tool needs only for Excel files.
 
 Then open <http://localhost:8765>. The tool starts with a small invented sample so there is something to look at.
 To load your own data, choose **Import**, pick your workbook and select **Replace**.
@@ -57,6 +60,23 @@ counts. Below it, a chart shows unindexed images by language.
 5. **Command line or API.** `python -m lct set` and `python -m lct paint` change single values; the JSON API does the
    same for scripts.
 
+**Slice and dice**
+
+- **Filters that follow you.** Any filter you set applies to every page and shows as a chip in the header, with one click
+  to remove it. Set filters from the heatmap's dropdowns and status bars, from Explore, or from Pivot headings.
+- **Explore.** One card of bars per field: tier, script, priority, both statuses, content type, language and any other
+  field you choose. Select a bar to filter everything to that value. Bars can count rows or sum estimated images.
+- **Pivot.** Put any field down the side and any field across the top. Each cell can show the number of rows, the sum
+  of estimated images, the most advanced full-text or index status, or the share of rows in production. Select a cell
+  to list the rows behind it.
+- **Gaps.** A chart of volume against status, the largest volumes not yet in production, and counts of rows that need
+  attention: no owner, no next step, no target, no volume estimate, not updated in six months, tier unconfirmed.
+
+**Details on click.** Selecting a row anywhere (a list, a chart dot, the table's View button, a History entry) opens a
+drawer with every field, the row's own change history and links to related rows: the same language, and the same
+content type in other languages. Selecting a language shows its baseline, its capability by content type and its
+history. From the drawer you can change statuses, edit, duplicate, delete or jump to the cell on the heatmap.
+
 **Languages.** One row per language with its script, quality marks and volumes. Renaming a language renames it on
 every capability row.
 
@@ -91,14 +111,14 @@ dialog. The JSON export holds everything and imports back unchanged.
 
 ## Command line
 
-```bash
-python -m lct import workbook.xlsx              # merge
-python -m lct import workbook.xlsx --replace    # make the tool match the file
-python -m lct import workbook.xlsx --dry-run    # show what would change, keep nothing
-python -m lct export capability.xlsx            # or .csv, .json
-python -m lct set CAP-012 "Index status" "Pilot / validation"
-python -m lct paint "Spanish" "Notarial records" ix "Production (partial)"
-```
+| Command | What it does |
+| --- | --- |
+| `python -m lct import workbook.xlsx` | Merge a spreadsheet in. |
+| `python -m lct import workbook.xlsx --replace` | Make the tool match the file. |
+| `python -m lct import workbook.xlsx --dry-run` | Show what would change and keep nothing. |
+| `python -m lct export capability.xlsx` | Write the data out. `.csv` and `.json` work too. |
+| `python -m lct set CAP-012 "Index status" "Pilot / validation"` | Change one field on one row. |
+| `python -m lct paint "Spanish" "Notarial records" ix "Production (partial)"` | Set a heatmap cell's index status (`ft` for full text). |
 
 ## API
 
@@ -118,7 +138,7 @@ to sign the change in History. Changes answer with the full new state, a message
 | `POST /api/undo` | Body: `{"batch": "..."}`. |
 | `POST /api/import?filename=x.xlsx&strategy=merge&apply=1` | Body: the file itself. Leave out `apply=1` for a preview. |
 | `GET /api/export?format=xlsx` | Also `csv` (add `&sheet=languages` for languages) and `json`. |
-| `GET /api/changes`, `GET /api/snapshots` | History and daily counts. |
+| `GET /api/changes`, `GET /api/snapshots` | History and daily counts. Add `?entity=capability&entity_id=CAP-012` for one row. |
 
 ```bash
 curl -X PUT http://localhost:8765/api/capabilities/CAP-012 \
@@ -156,6 +176,9 @@ lct/
   schema.py       default fields and dropdown lists
   sample.py       invented sample data
   static/         the web app (plain HTML, CSS and JavaScript; D3 is bundled)
+    js/heatmap.js   heatmap, paint mode and the selection panel
+    js/explore.js   breakdown cards; js/pivot.js the pivot table; js/gaps.js the gaps page
+    js/drawer.js    details drawer and row lists; js/views.js table, languages, history, settings, import
 tests/            unit tests
 ```
 

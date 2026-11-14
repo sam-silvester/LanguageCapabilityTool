@@ -1,4 +1,4 @@
-// Shared pieces: DOM helpers, API calls, app state, the undo toast and the tables the views are drawn from.
+// Shared pieces: DOM helpers, API calls, app state, filters ("the slice"), the undo toast and derived tables.
 
 export const $ = (sel, root = document) => root.querySelector(sel);
 export const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -26,20 +26,31 @@ export const fmtInt = (n) => Number(n).toLocaleString('en-US');
 export const fmtShort = (n) => d3.format('.3~s')(n).replace('G', 'B');
 export const plural = (n, one, many) => (n === 1 ? '1 ' + one : n + ' ' + (many || one + 's'));
 export const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-');
+export const remember = (key, value) => { try { localStorage.setItem(key, value); } catch (err) { /* private mode */ } };
+export const recall = (key) => { try { return localStorage.getItem(key) || ''; } catch (err) { return ''; } };
 
 // ---- state -------------------------------------------------------------------------------
 export const app = {
   data: null,                       // everything the server holds: rows, languages, fields, lists
   view: 'heatmap',
-  filters: {tier: '', script: ''},
+  slice: {},                        // filters shared by every page: field key -> selected values ('' means blank)
+  search: '',                       // free-text part of the slice, lower case
+  hideEmpty: false,                 // heatmap: drop languages with no rows in view
   cellView: 'both',                 // both | ft | ix
   sel: {lang: '', ctype: ''},
   paint: {on: false, side: 'ft', status: ''},
+  drawer: null,                     // {type: 'capability', id} or {type: 'language', name}
   user: '',
 };
 const listeners = [];
 export const onChange = (fn) => listeners.push(fn);
 export const refresh = () => listeners.forEach((fn) => fn());
+export function goto(view) {
+  app.view = view;
+  if (location.hash !== '#' + view) history.replaceState(null, '', '#' + view);
+  refresh();
+  window.scrollTo(0, 0);
+}
 
 // ---- API ---------------------------------------------------------------------------------
 async function request(method, path, body, file) {
@@ -106,15 +117,17 @@ export function toast(message, batch, bad) {
   toastTimer = setTimeout(() => { box.hidden = true; }, bad ? 12000 : 9000);
 }
 
-// ---- lookups and derived tables ----------------------------------------------------------------
+// ---- lookups -----------------------------------------------------------------------------
 export const fields = (entity) => app.data.fields[entity];
 export const fieldOf = (entity, key) => fields(entity).find((f) => f.key === key);
+export const labelOf = (key, entity) => { const f = fieldOf(entity || 'capability', key); return f ? f.label : key; };
 export const listNames = (name) => ((app.data.lists || {})[name] || []).map((i) => i.name);
 export const statuses = () => listNames('Status');
 export const rankOf = (status) => statuses().indexOf(status) + 1;         // 0 = not on the scale
 export const swatch = (rank) => 'var(--s' + (rank >= 1 && rank <= 10 ? rank : 0) + ')';
 export const onSwatch = (rank) => (rank >= 1 && rank <= 10 ? 'var(--on-s' + rank + ')' : 'var(--ink)');
-export const statusOfRank = (rank) => statuses()[rank - 1] || 'No status';
+export const cellValue = (row, key) => { const v = row[key]; return v === undefined || v === null ? '' : String(v); };
+export const shown = (value) => (value === '' ? '(blank)' : value);
 
 /** Rank from which a row counts as "in production", and the rank that marks a gap. */
 export function thresholds() {
@@ -124,9 +137,54 @@ export function thresholds() {
   return {prod, gap};
 }
 
-export const inView = (row) => (!app.filters.tier || row.tier === app.filters.tier)
-  && (!app.filters.script || row.script === app.filters.script);
+// ---- the slice: one set of filters that every page respects ----------------------------------------
+/** Does a capability row pass the slice? `except` leaves one field out, so a breakdown can show its own alternatives. */
+export function inView(row, except) {
+  for (const key of Object.keys(app.slice)) {
+    if (key !== except && !app.slice[key].includes(cellValue(row, key))) return false;
+  }
+  if (app.search && !Object.entries(row).some(([k, v]) => !k.startsWith('_') && String(v).toLowerCase().includes(app.search))) return false;
+  return true;
+}
+export const rowsInView = () => app.data.capabilities.filter((r) => inView(r));
+export const langInView = (l) => (!app.slice.script || app.slice.script.includes(l.script || ''))
+  && (!app.slice.language || app.slice.language.includes(l.language));
+export function setSlice(key, values) {
+  if (values && values.length) app.slice[key] = values.slice(); else delete app.slice[key];
+  refresh();
+}
+export function toggleSlice(key, value) {
+  const current = app.slice[key] || [];
+  setSlice(key, current.includes(value) ? current.filter((v) => v !== value) : current.concat([value]));
+}
+export function clearSlice() { app.slice = {}; app.search = ''; refresh(); }
+export const sliceActive = () => Object.keys(app.slice).length > 0 || !!app.search;
 
+/** Fields worth slicing by: not free text, not numbers, and with a manageable number of values in use. */
+export function dimensions() {
+  return fields('capability').filter((f) => !['id', 'long', 'int'].includes(f.type)).filter((f) => {
+    const seen = new Set();
+    for (const row of app.data.capabilities) {
+      const v = cellValue(row, f.key);
+      if (v) seen.add(v);
+      if (seen.size > 80) return false;
+    }
+    return seen.size >= 1;
+  });
+}
+/** A sensible order for a field's values: the status scale, the list order, the language order, else A to Z. Blank last. */
+export function orderValues(key, values) {
+  const f = fieldOf('capability', key);
+  let order = [];
+  if (f && f.type === 'status') order = statuses().slice().reverse();
+  else if (f && f.type === 'language') order = app.data.languages.map((l) => l.language);
+  else if (f && f.list) order = listNames(f.list);
+  const pos = new Map(order.map((v, i) => [v, i]));
+  const at = (v) => (pos.has(v) ? pos.get(v) : 1e6);
+  return Array.from(values).sort((a, b) => (a === '' ? 1 : 0) - (b === '' ? 1 : 0) || at(a) - at(b) || a.localeCompare(b, undefined, {numeric: true}));
+}
+
+// ---- derived tables ----------------------------------------------------------------------
 export function contentTypes() {
   // Content types that have at least one row, in list order; ones missing from the list go last.
   const order = new Map(listNames('Content type').map((n, i) => [n, i]));
@@ -171,21 +229,25 @@ export function statusCounts() {
 
 export function summary() {
   const {prod, gap} = thresholds();
-  const out = {rows: 0, ft: 0, ix: 0, gap: 0};
+  const out = {rows: 0, ft: 0, ix: 0, gap: 0, images: 0, languages: 0};
+  const langs = new Set();
   for (const row of app.data.capabilities) {
     if (!inView(row)) continue;
     const ft = rankOf(row.ft_status), ix = rankOf(row.ix_status);
     out.rows += 1;
+    out.images += Number(row.est_images) || 0;
+    langs.add(row.language);
     if (ft >= prod) out.ft += 1;
     if (ix >= prod) out.ix += 1;
     if (gap && (ft === gap || ix === gap)) out.gap += 1;
   }
+  out.languages = langs.size;
   return out;
 }
 
 export function backlog() {
   return app.data.languages
-    .filter((l) => !app.filters.script || l.script === app.filters.script)
+    .filter(langInView)
     .map((l) => {
       const mid = Number(l.mid_tier_unindexed) || 0, top = Number(l.top_tier_unindexed) || 0;
       return {language: l.language, mid, top, total: mid + top};
@@ -197,7 +259,8 @@ export function backlog() {
 export const selectedRows = () => app.data.capabilities.filter((r) => (!app.sel.lang || r.language === app.sel.lang)
   && (!app.sel.ctype || r.content_type === app.sel.ctype) && inView(r));
 
-/** A small tooltip that lives inside a chart box. show() takes the nodes to display. */
+// ---- small shared widgets ----------------------------------------------------------------------
+/** A tooltip that lives inside a chart box. show() takes the nodes to display. */
 export function makeTip(box) {
   const tip = el('div', {class: 'lct-tip', hidden: true});
   box.appendChild(tip);
@@ -218,3 +281,15 @@ export const statusChip = (status) => {
   const rank = rankOf(status);
   return el('span', {class: 'lct-cellstatus'}, el('i', {class: 'lct-sw', style: 'background-color:' + swatch(rank)}), status || '—');
 };
+
+/** A status dropdown that saves as soon as it changes. */
+export function statusPick(row, key) {
+  const current = row[key] || '';
+  const names = statuses();
+  const sel = el('select', {class: 'lct-select', 'aria-label': (key === 'ft_status' ? 'Full-text' : 'Index') + ' status of ' + row.id});
+  if (!names.includes(current)) sel.append(new Option(current || 'No status', current));
+  names.forEach((name) => sel.append(new Option(name)));
+  sel.value = current;
+  sel.onchange = () => mutate(() => api.put(idPath('/api/capabilities', row.id), {[key]: sel.value}));
+  return el('span', {class: 'lct-status-pick'}, el('i', {class: 'lct-sw', style: 'background-color:' + swatch(rankOf(current))}), sel);
+}

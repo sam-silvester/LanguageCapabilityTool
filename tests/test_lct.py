@@ -113,6 +113,15 @@ class TestRows(StoreCase):
         self.store.delete_language("Welsh (Cymraeg)")
         self.assertEqual(self.store.state()["languages"], [])
 
+    def test_history_can_be_read_for_one_row(self):
+        self.store.create_capability({"language": "Welsh"})
+        self.store.create_capability({"language": "Irish"})
+        self.store.update_capability("CAP-002", {"owner": "Ana"})
+        mine = self.store.changes(entity="capability", entity_id="CAP-002")
+        self.assertEqual({c["entity_id"] for c in mine}, {"CAP-002"})
+        self.assertEqual([c["action"] for c in mine], ["update", "create"])
+        self.assertGreater(len(self.store.changes()), len(mine))
+
     def test_lists_and_snapshots(self):
         self.store.set_list("Priority", [{"name": "Now"}, "Later", "", "Now"])
         self.assertEqual([i["name"] for i in self.store.state()["lists"]["Priority"]], ["Now", "Later"])
@@ -266,6 +275,8 @@ class TestApi(unittest.TestCase):
         self.assertIn(b"X-1", body)
         status, body, _ = self.call("GET", "/api/changes")
         self.assertTrue(json.loads(body)["changes"])
+        status, body, _ = self.call("GET", "/api/changes?entity=capability&entity_id=X-1")
+        self.assertEqual({c["entity_id"] for c in json.loads(body)["changes"]}, {"X-1"})
         self.assertEqual(self.call("GET", "/api/export?format=pdf")[0], 400)
 
 

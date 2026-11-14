@@ -11,6 +11,9 @@
   <div class="lct-brand">Language Capability Tool</div>
   <nav class="lct-tabs" aria-label="Views">
     <button type="button" class="lct-tab-b" data-view="heatmap" aria-current="page">Heatmap</button>
+    <button type="button" class="lct-tab-b" data-view="explore">Explore</button>
+    <button type="button" class="lct-tab-b" data-view="pivot">Pivot</button>
+    <button type="button" class="lct-tab-b" data-view="gaps">Gaps</button>
     <button type="button" class="lct-tab-b" data-view="table">Table</button>
     <button type="button" class="lct-tab-b" data-view="languages">Languages</button>
     <button type="button" class="lct-tab-b" data-view="history">History</button>
@@ -30,6 +33,7 @@
       </div>
     </details>
   </div>
+  <div class="lct-slicebar" id="slicebar" hidden></div>
 </header>
 <div class="lct-banner" id="banner" hidden>
   <span>You’re looking at sample data. Import your own workbook and choose “Replace” to clear it.</span>
@@ -68,6 +72,7 @@
         <button type="button" class="lct-seg-b" data-cellview="ix" aria-pressed="false">Index</button>
       </div>
       <span class="lct-key lct-cap"><span class="lct-split" aria-hidden="true"><i class="lct-split-l"></i><i class="lct-split-r"></i></span>In Both, the left half is full text and the right half is index.</span>
+      <label class="lct-check"><input type="checkbox" id="hide-empty"> Hide languages with no rows in view</label>
     </div>
     <div class="lct-paintbar">
       <button type="button" class="lct-btn" id="paint-toggle" aria-pressed="false">Paint statuses</button>
@@ -110,13 +115,78 @@
   </section>
 </main>
 
+<!-- ================= Explore ================= -->
+<main class="lct-view" id="view-explore" hidden>
+  <h1 class="lct-title">Explore</h1>
+  <p class="lct-cap">Each card breaks the rows down by one field. Select a bar to filter every page to that value, and select it again to remove the filter. A card keeps showing its own alternatives, so you can add or switch values.</p>
+  <div class="lct-toolbar">
+    <div class="lct-seg" role="group" aria-label="What the bars measure">
+      <button type="button" class="lct-seg-b" data-measure="rows" aria-pressed="true">Count rows</button>
+      <button type="button" class="lct-seg-b" data-measure="images" aria-pressed="false">Sum est. images</button>
+    </div>
+    <details class="lct-menu" id="ex-menu">
+      <summary class="lct-btn">Choose breakdowns</summary>
+      <div class="lct-menu-list lct-menu-left" id="ex-menu-list"></div>
+    </details>
+    <input class="lct-input" id="ex-search" type="search" placeholder="Search every field" aria-label="Search rows">
+  </div>
+  <p class="lct-lede" id="ex-summary"></p>
+  <div class="lct-cards" id="ex-facets"></div>
+  <section class="lct-sec">
+    <h2 class="lct-h2">Rows in view</h2>
+    <p class="lct-cap">Select a row for its details and history.</p>
+    <div id="ex-rows"></div>
+  </section>
+</main>
+
+<!-- ================= Pivot ================= -->
+<main class="lct-view" id="view-pivot" hidden>
+  <h1 class="lct-title">Pivot</h1>
+  <p class="lct-cap">Put any field down the side and any field across the top. Select a cell to list the rows behind it, or a heading to filter every page to that value.</p>
+  <div class="lct-toolbar lct-toolbar-end">
+    <label class="lct-field">Down the side <select class="lct-select" id="pv-rows"></select></label>
+    <button type="button" class="lct-btn" id="pv-swap">Swap</button>
+    <label class="lct-field">Across the top <select class="lct-select" id="pv-cols"></select></label>
+    <label class="lct-field">Each cell shows <select class="lct-select" id="pv-show"></select></label>
+  </div>
+  <div class="lct-gridwrap lct-gridwrap-free" id="pv-table"></div>
+  <section class="lct-sec" id="pv-drill"></section>
+</main>
+
+<!-- ================= Gaps ================= -->
+<main class="lct-view" id="view-gaps" hidden>
+  <div class="lct-head">
+    <h1 class="lct-title">Gaps</h1>
+    <div class="lct-seg" role="group" aria-label="Side to analyse">
+      <button type="button" class="lct-seg-b" data-gapside="ft" aria-pressed="true">Full text</button>
+      <button type="button" class="lct-seg-b" data-gapside="ix" aria-pressed="false">Index</button>
+    </div>
+  </div>
+  <section class="lct-sec">
+    <h2 class="lct-h2">Volume against status</h2>
+    <p class="lct-cap">One dot for each row with a volume estimate, placed by its status and its estimated images on a log scale. Large volumes low on the scale are the biggest openings. Select a dot for details.</p>
+    <div class="lct-chart" id="gp-strip" role="group" aria-label="Rows by status and estimated images">—</div>
+  </section>
+  <section class="lct-sec">
+    <h2 class="lct-h2" id="gp-top-title">Largest volumes not yet in production</h2>
+    <p class="lct-cap" id="gp-top-cap"></p>
+    <div id="gp-top"></div>
+  </section>
+  <section class="lct-sec">
+    <h2 class="lct-h2">Rows that need attention</h2>
+    <p class="lct-cap">How many rows in view are missing something. Select a check to list its rows.</p>
+    <div class="lct-checks" id="gp-checks"></div>
+    <div id="gp-check-rows"></div>
+  </section>
+</main>
+
 <!-- ================= Table ================= -->
 <main class="lct-view" id="view-table" hidden>
   <div class="lct-head">
     <h1 class="lct-title">Capability rows</h1>
     <button type="button" class="lct-btn lct-btn-primary" id="table-add">Add a row</button>
   </div>
-  <p class="lct-cap">Click a cell to edit it. Enter saves, Esc cancels. For bulk edits, export to Excel, edit there and import the file back.</p>
+  <p class="lct-cap">Click a cell to edit it. Enter saves, Esc cancels. View opens a row’s details and history. For bulk edits, export to Excel, edit there and import the file back.</p>
   <div class="lct-toolbar" id="table-tools"></div>
   <div class="lct-gridwrap" id="table-grid"></div>
 </main>
@@ -166,6 +236,10 @@
     <div class="lct-cards" id="lists"></div>
   </section>
 </main>
+
+<aside class="lct-drawer" id="drawer" aria-label="Details" hidden>
+  <div class="lct-drawer-body" id="drawer-body"></div>
+</aside>
 
 <!-- ================= Dialogs ================= -->
 <dialog class="lct-dialog" id="dlg-edit">

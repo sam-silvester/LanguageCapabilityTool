@@ -205,11 +205,18 @@ class Store:
         with self._tx(commit=False) as c:
             return self._state(c)
 
-    def changes(self, limit: int = 300, before: int = 0) -> list:
+    def changes(self, limit: int = 300, before: int = 0, entity: str = "", entity_id: str = "") -> list:
+        """Newest changes first. Pass entity and entity_id for the history of one row or one language."""
+        where, args = [], []
+        if before:
+            where.append("id < ?")
+            args.append(before)
+        if entity and entity_id:
+            where.append("entity = ? AND entity_id = ?")
+            args += [entity, entity_id]
+        sql = "SELECT * FROM changes" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY id DESC LIMIT ?"
         with self._tx(commit=False) as c:
-            sql = "SELECT * FROM changes" + (" WHERE id < ?" if before else "") + " ORDER BY id DESC LIMIT ?"
-            args = (before, limit) if before else (limit,)
-            return [dict(r) for r in c.execute(sql, args)]
+            return [dict(r) for r in c.execute(sql, args + [limit])]
 
     def snapshots(self) -> list:
         with self._tx(commit=False) as c:
